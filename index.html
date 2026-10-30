@@ -130,6 +130,10 @@ button, input, select { font: inherit; color: inherit; }
 .btn.sm .ic { width: 16px; height: 16px; }
 .btn.danger { color: var(--danger); }
 .btn:disabled { opacity: .42; cursor: not-allowed; transform: none; }
+.btn.test { border-style: dashed; border-color: var(--accent-line); color: var(--accent); background: var(--surface); }
+.btn.test:hover { background: var(--accent-soft); }
+form.flash { animation: flash 1s ease-out; }
+@keyframes flash { from { box-shadow: 0 0 0 4px var(--accent-line); } }
 input, select { height: 36px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 0 10px; min-width: 0; }
 input:focus, select:focus { outline: none; border-color: var(--focus); box-shadow: 0 0 0 3px var(--focus-soft); }
 input:disabled { background: var(--surface-2); color: var(--muted); }
@@ -311,7 +315,7 @@ dialog[open] { animation: pop .16s ease-out; }
 /* Toast */
 #toast { position: fixed; left: 50%; bottom: max(20px, env(safe-area-inset-bottom)); transform: translate(-50%, 16px); opacity: 0; pointer-events: none; background: #0E1A2B; color: #fff; padding: 10px 12px 10px 16px; border-radius: 10px; display: flex; gap: 14px; align-items: center; box-shadow: var(--shadow-lg); transition: opacity .18s, transform .18s; z-index: 50; max-width: calc(100vw - 32px); font-size: 13.5px; }
 #toast.show { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
-#toast button { border: 0; background: rgba(255,255,255,.1); color: #7FE0E8; font-weight: 700; padding: 5px 10px; border-radius: 7px; cursor: pointer; }
+#toast button, #toast a { border: 0; background: rgba(255,255,255,.1); color: #7FE0E8; font-weight: 700; padding: 5px 10px; border-radius: 7px; cursor: pointer; white-space: nowrap; text-decoration: none; }
 
 /* Narrow screens */
 @media (max-width: 1180px) {
@@ -397,6 +401,6 @@ dialog[open] { animation: pop .16s ease-out; }
 <dialog id="modal" aria-label="Dialog"></dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 <div id="print"></div>
-<script type="module" src="app.js?v=20261030c"></script>
+<script type="module" src="app.js?v=20261030e"></script>
 </body>
 </html>

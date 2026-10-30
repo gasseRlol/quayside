@@ -304,6 +304,50 @@ export function invoiceOp(w, op, t = Date.now()) {
   return op.invoice;
 }
 
+// ---------- Examples, for testing with one click ----------
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const exampleRef = () => `REQ-${1000 + Math.floor(Math.random() * 9000)}`;
+export function exampleFields(w) {
+  const port = pick(PORTS), point = pick(port.points);
+  const from = pick(COUNTRIES), to = pick(COUNTRIES.filter(c => c !== from));
+  return {
+    vessel: pick(w.vessels).id, agency: pick(AGENCIES), port: port.name, point: point.name,
+    direction: ['Port Said', 'Suez'].includes(port.name) ? pick(['Northbound', 'Southbound']) : 'Port call',
+    from, to, eta: Date.now() + (3 + Math.floor(Math.random() * 45)) * H, delivery: 'normal',
+    marine: [pick(USERS.filter(u => u.role === 'Marine')).id], buyer: pick(USERS.filter(u => u.role === 'Purchasing')).id,
+    remark: pick(['Deliver before noon', 'Agent will confirm the berth', 'Provisions must stay chilled', 'Captain wants a copy of the invoice', 'Call the agent before going out']),
+    ref: exampleRef(), ofrom: pick(ORDER_FROM),
+  };
+}
+// Adds n catalogue lines from two random categories to the operation's last order
+export function addExampleLines(w, op, n = 5, t = Date.now()) {
+  const order = op.orders.at(-1) || addOrder(w, op, { ref: exampleRef(), from: pick(ORDER_FROM) }, t);
+  const cats = [pick(CATEGORIES), pick(CATEGORIES)];
+  let pool = w.catalog.filter(c => cats.includes(c.cat) && !op.items.some(i => i.code === c.code));
+  if (pool.length < n) pool = w.catalog.filter(c => !op.items.some(i => i.code === c.code));
+  pool = pool.map(c => [Math.random(), c]).sort((a, b) => a[0] - b[0]).slice(0, n).map(x => x[1]);
+  const lines = pool.map(c => {
+    const qty = c.cost > 500 ? 1 + Math.floor(Math.random() * 2) : c.cost > 60 ? 2 + Math.floor(Math.random() * 4)
+      : c.cat === 'Provisions' ? pick([20, 30, 40, 50, 80]) : pick([4, 6, 10, 12]);
+    return addLine(w, op, order.id, c.code, qty, t, true);
+  });
+  if (lines.length) log(w, op.id, `Added ${lines.length} example lines to ${order.ref}`, t);
+  return lines;
+}
+// A whole example ship call. stage 'ready': everything is in our store. 'sent': also packed and sent out.
+export function exampleOp(w, stage = 'ready') {
+  const f = exampleFields(w);
+  const op = createOp(w, f);
+  addOrder(w, op, { ref: f.ref, from: f.ofrom });
+  addExampleLines(w, op, 4 + Math.floor(Math.random() * 3));
+  const all = op.items.map(i => i.id);
+  createPOs(w, op, all);
+  receive(w, op, all);
+  let dn = null;
+  if (stage === 'sent') { dn = createDN(w, op, all); sendDN(w, dn); }
+  return { op, dn };
+}
+
 // ---------- Sample world ----------
 function mulberry(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
 

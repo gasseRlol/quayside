@@ -1,4 +1,4 @@
-import * as Q from './data.js?v=20261030b';
+import * as Q from './data.js?v=20261030e';
 
 // ---------- Helpers ----------
 const $ = (s, el = document) => el.querySelector(s);
@@ -41,6 +41,7 @@ const I = {
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   link: '<path d="M10 14a4.5 4.5 0 006.4 0l3-3a4.5 4.5 0 00-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 00-6.4 0l-3 3a4.5 4.5 0 006.4 6.4l1-1"/>',
   trash: '<path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  magic: '<path d="M4 20L15 9"/><path d="M15 9l2-2"/><path d="M15 3v2M18.5 4.5l-1.4 1.4M21 9h-2M10 5.5l1 .6M19 14l-.6-1"/>',
 };
 const icon = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${I[n]}</svg>`;
 
@@ -51,9 +52,9 @@ const ui = { sel: new Set(), selOp: null, show: 'all', iq: '', poShow: 'open', d
 // Each delivery note is handed to the tracker. The tracker answers with a tracking code; from then
 // on its courier status (on the way, delivered with the handover PIN) flows back into Quayside.
 let T = null;
-const linking = new Set();
+const linking = new Map(); // delivery note id -> the hand-over in progress
 let trackSig = '', renderLater = false;
-import('../parcel-tracker/connect.js?v=20261030a')
+import('../parcel-tracker/connect.js?v=20261030b')
   .then(m => { T = m; T.onChange(syncTracker); syncTracker(); render(); })
   .catch(err => { console.warn('Delivery tracker not reachable', err); render(); });
 
@@ -67,9 +68,12 @@ function tripFor(w, dn) {
     receiver: `the Chief Officer of ${Q.vessel(w, op.vessel)?.name || 'the vessel'}`,
   };
 }
-async function linkDN(dnId) {
-  if (!T || linking.has(dnId)) return;
-  linking.add(dnId);
+function linkDN(dnId) {
+  if (!T) return Promise.resolve();
+  if (!linking.has(dnId)) linking.set(dnId, handOver(dnId).finally(() => linking.delete(dnId)));
+  return linking.get(dnId);
+}
+async function handOver(dnId) {
   try {
     let w = W();
     const dn = Q.dnById(w, dnId);
@@ -92,7 +96,6 @@ async function linkDN(dnId) {
     w = W();
     if (ok && Q.dnById(w, dnId)?.status === 'on_way') await T.dispatch(r.code, tripFor(w, Q.dnById(w, dnId)));
   } catch (e) { console.warn('Could not hand', dnId, 'to the tracker', e); }
-  finally { linking.delete(dnId); }
 }
 async function dispatchDN(dnId) {
   const w = W(), dn = Q.dnById(w, dnId);
@@ -234,7 +237,7 @@ function nextStep(w, op) {
   const by = s => op.items.filter(i => Q.itemStatus(w, i) === s);
   const dns = w.dns.filter(d => d.op === op.id);
   switch (st) {
-    case 'inquiry': return { text: 'No lines yet. Add what the vessel asked for.', btn: ['addItem', 'Add items', 'plus'] };
+    case 'inquiry': return { text: 'No lines yet. Add what the vessel asked for.', btn: ['addItem', 'Add items', 'plus'], alt: ['exampleItems', 'Add example items', 'magic'] };
     case 'quoting': { const n = by('needs_price').length; return { text: `${plural(n, 'line')} still need${n === 1 ? 's' : ''} a supplier and a price.`, btn: ['show', 'Show them', 'search', 'needs'] }; }
     case 'to_purchase': {
       const l = by('to_order'); const sups = new Set(l.map(i => i.sup)).size;
@@ -284,8 +287,11 @@ function dashboard() {
   };
   return `
   <div class="page-head"><div><p class="eyebrow">${new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</p><h1>${hello}</h1></div>
-    <div class="head-actions"><a class="btn primary" href="#/ops/new">${icon('plus')}New operation</a></div></div>
-  <div class="demo-note">${icon('anchor')}<span><b>Demo with sample data.</b> Changes are saved in this browser only. Try opening a ship below and moving it to the next step.</span><button class="btn sm ghost" data-act="reset">Reset demo</button></div>
+    <div class="head-actions"><button class="btn test" data-act="testDelivery" title="Makes an example ship, packs its items and sends them out, so you can watch it in the tracker">${icon('magic')}Send a test delivery</button><a class="btn primary" href="#/ops/new">${icon('plus')}New operation</a></div></div>
+  <div class="demo-note">${icon('anchor')}<span>${w.ops.length
+    ? '<b>Demo with sample data.</b> Changes are saved in this browser only. Try opening a ship below and moving it to the next step.'
+    : '<b>Empty.</b> Nothing here yet: press New operation to add your first ship, then follow it in the tracker. Vessels, suppliers and the catalogue are still there.'}</span>
+    ${w.ops.length ? '<button class="btn sm ghost" data-act="startEmpty" title="Clears all operations, purchase orders and deliveries, here and in the tracker">Start empty</button>' : ''}<button class="btn sm ghost" data-act="reset">Reset demo</button></div>
   <div class="kpis">
     ${tile('#/ops?when=72h&sort=eta', soon.length, 'Ships in the next 72 h', 'arriving or alongside', 'teal')}
     ${tile('#/ops?status=open&sort=eta', open.length, 'Open operations', `${w.ops.length} in total`, 'blue')}
@@ -327,7 +333,7 @@ function opsList(r) {
   const filtered = term || port || status || when;
   return `
   <div class="page-head"><div><h1>Operations</h1><p class="lead">Every ship call: what it asked for, what was bought and what went on board.</p></div>
-    <div class="head-actions"><a class="btn primary" href="#/ops/new">${icon('plus')}New operation</a></div></div>
+    <div class="head-actions"><button class="btn test" data-act="exampleShip" title="Makes an example ship whose items are already in the store">${icon('magic')}Example ship</button><a class="btn primary" href="#/ops/new">${icon('plus')}New operation</a></div></div>
   <div class="filters card">
     <label class="f-grow">${icon('search')}<input data-filter-text="q" data-focus="ops-q" placeholder="Operation, vessel, IMO, requisition, remark" value="${esc(q.get('q') || '')}"></label>
     <select data-filter="port" aria-label="Port">${opt('', 'All ports')}${Q.PORTS.map(p => opt(p.name, p.name, port === p.name)).join('')}</select>
@@ -361,7 +367,8 @@ function opNew() {
   const w = W();
   const eta = Date.now() + 2 * D;
   return `
-  <div class="page-head"><div><a class="crumb" href="#/ops">Operations</a><h1>New operation</h1><p class="lead">One operation = one ship call. Fill what you know; everything can change later.</p></div></div>
+  <div class="page-head"><div><a class="crumb" href="#/ops">Operations</a><h1>New operation</h1><p class="lead">One operation = one ship call. Fill what you know; everything can change later.</p></div>
+    <div class="head-actions"><button class="btn test" data-act="exampleFill">${icon('magic')}Fill with an example</button></div></div>
   <form class="card form-grid" data-form="newOp">
     <fieldset><legend>Vessel</legend>
       <label>Vessel <select name="vessel">${w.vessels.map(v => opt(v.id, v.name)).join('')}<option value="__new">New vessel…</option></select></label>
@@ -497,6 +504,7 @@ function opDetail(r) {
         ${op.orders.length > 1 ? `<select data-showsel aria-label="Order">${opt('', 'By order…')}${op.orders.map(o => opt(o.id, o.ref, ui.show === o.id)).join('')}</select>` : ''}
       </div>
       <label class="f-grow small-search">${icon('search')}<input data-iq data-focus="iq" placeholder="Find a line" value="${esc(ui.iq)}"></label>
+      <button class="btn test" data-act="exampleItems" title="Adds 5 example lines from the catalogue">${icon('magic')}Example items</button>
       <button class="btn primary" data-act="addItem">${icon('plus')}Add items</button>
     </div>
     ${sel.length ? `<div class="bulk">
@@ -594,7 +602,8 @@ function dnsList() {
   const activeN = list.filter(x => x.d.status !== 'delivered').length;
   if (ui.dnShow === 'active') list = list.filter(x => x.d.status !== 'delivered');
   return `
-  <div class="page-head"><div><h1>Deliveries</h1><p class="lead">Delivery notes going out to the ships. Each one is handed to <a href="../parcel-tracker/?demo" target="_blank" rel="noopener">Parcel Tracker</a>, which follows the courier to the ship and reports back.</p></div></div>
+  <div class="page-head"><div><h1>Deliveries</h1><p class="lead">Delivery notes going out to the ships. Each one is handed to <a href="../parcel-tracker/?demo" target="_blank" rel="noopener">Parcel Tracker</a>, which follows the courier to the ship and reports back.</p></div>
+    <div class="head-actions"><button class="btn test" data-act="testDelivery" title="Makes an example ship, packs its items and sends them out">${icon('magic')}Send a test delivery</button></div></div>
   <div class="seg page-seg"><button class="${ui.dnShow === 'active' ? 'on' : ''}" data-act="dnShow" data-id="active">Packed or on the way <b>${activeN}</b></button><button class="${ui.dnShow === 'all' ? 'on' : ''}" data-act="dnShow" data-id="all">All <b>${w.dns.length}</b></button></div>
   <section class="card flush"><div class="table-wrap"><table class="grid">
     <thead><tr><th>Delivery note</th><th>Packed</th><th>Operation</th><th>Vessel</th><th>Deliver to</th><th class="r">Lines</th><th class="r">Value</th><th>Status</th><th>Tracking</th><th></th></tr></thead>
@@ -680,12 +689,12 @@ function notFound() {
 
 // ---------- Toast with undo ----------
 let toastTimer;
-function toast(text, undoable = true) {
+function toast(text, undoable = true, link = null) {
   const el = $('#toast');
-  el.innerHTML = `<span>${esc(text)}</span>${undoable && Q.canUndo() ? `<button data-act="undo">Undo</button>` : ''}`;
+  el.innerHTML = `<span>${esc(text)}</span>${link ? `<a href="${esc(link.href)}" target="_blank" rel="noopener">${esc(link.label)}</a>` : ''}${undoable && Q.canUndo() ? `<button data-act="undo">Undo</button>` : ''}`;
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 6000);
+  toastTimer = setTimeout(() => el.classList.remove('show'), link ? 15000 : 6000);
 }
 
 // ---------- Dialog ----------
@@ -726,7 +735,7 @@ function openAddItems(op) {
         <button type="button" class="btn sm" data-act="aiCustom">${icon('plus')}Add custom line</button>
       </details>
       <p id="ai-added" class="added" aria-live="polite"></p>`,
-    foot: `<button type="button" class="btn primary" data-act="closeModal">Done</button>`,
+    foot: `<button type="button" class="btn test" data-act="exampleItems">${icon('magic')}Add 5 example items</button><button type="button" class="btn primary" data-act="closeModal">Done</button>`,
   });
   aiResults();
 }
@@ -801,6 +810,14 @@ function printDoc(kind) {
 const ACT = {
   undo() { const l = Q.undo(); if (l) toast(`Undone: ${l}`, false); },
   reset() { if (confirm('Put the sample data back? Your changes in this browser will be lost.')) { Q.reset(); ui.sel.clear(); toast('Demo reset', false); } },
+  async startEmpty() {
+    Q.commit('clear everything', w => { w.ops = []; w.pos = []; w.dns = []; w.log = []; return true; });
+    ui.sel.clear();
+    if (T) await T.clearDemo();
+    location.hash = '#/';
+    render();
+    toast('Cleared. Add your own operation with New operation.');
+  },
   closeModal,
   navToggle() { document.body.classList.toggle('nav-open'); },
   clearFilters() { history.replaceState(null, '', '#/ops'); render(); },
@@ -811,6 +828,40 @@ const ACT = {
   dnShow(d) { ui.dnShow = d.id; render(); },
   print(d) { printDoc(d.id); },
   addItem() { const op = currentOp(); if (op) openAddItems(op); },
+  // ----- Example buttons, for testing quickly -----
+  exampleFill() {
+    const f = $('form[data-form="newOp"]'), x = Q.exampleFields(W());
+    if (!f) return;
+    Object.assign(f.vessel, { value: x.vessel }); f.newVessel.value = ''; f.agency.value = x.agency; f.port.value = x.port; f.point.value = x.point;
+    f.eta.value = toLocalInput(x.eta); f.direction.value = x.direction; f.from.value = x.from; f.to.value = x.to;
+    f.m1.value = x.marine[0]; f.m2.value = ''; f.buyer.value = x.buyer; f.delivery.value = 'normal';
+    f.ref.value = x.ref; f.ofrom.value = x.ofrom; f.remark.value = x.remark;
+    f.classList.remove('flash'); void f.offsetWidth; f.classList.add('flash');
+    toast('Filled with an example. Change anything, then press Open operation.', false);
+  },
+  exampleItems() {
+    const op = currentOp(); if (!op) return;
+    const lines = Q.commit('add example items', w => Q.addExampleLines(w, Q.opById(w, op.id), 5));
+    if (modal.open) closeModal();
+    if (lines?.length) { ui.show = 'all'; render(); toast(`Added ${plural(lines.length, 'example line')}`); }
+  },
+  exampleShip() {
+    const r = Q.commit('example ship', w => Q.exampleOp(w, 'ready'));
+    if (!r) return;
+    location.hash = `#/op/${r.op.id}`;
+    toast(`${Q.vessel(W(), r.op.vessel)?.name}: everything is in the store. Press Create delivery note, then Send out.`);
+  },
+  async testDelivery() {
+    const r = Q.commit('test delivery', w => Q.exampleOp(w, 'sent'));
+    if (!r) return;
+    const name = Q.vessel(W(), r.op.vessel)?.name;
+    if (!T) { toast(`${r.dn.id} sent to ${name}, but the tracker could not be reached`, false); return; }
+    toast(`Sending ${r.dn.id} to ${name}…`, false);
+    await linkDN(r.dn.id);
+    const dn = Q.dnById(W(), r.dn.id);
+    if (dn?.tracking) toast(`${dn.id} is on its way to ${name} at ${dn.point}. Tracker code ${dn.tracking.code}.`, false, { href: T.trackUrl(dn.tracking.code), label: 'Open in tracker' });
+    else toast(`${r.dn.id} sent, but the tracker did not answer. Try again in a moment.`, false);
+  },
   addOrder() {
     const op = currentOp(); if (!op) return;
     openModal({
