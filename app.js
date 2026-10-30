@@ -1,4 +1,4 @@
-import * as Q from './data.js?v=20261030e';
+import * as Q from './data.js?v=20261031a';
 
 // ---------- Helpers ----------
 const $ = (s, el = document) => el.querySelector(s);
@@ -49,14 +49,125 @@ const icon = (n, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-h
 const ui = { sel: new Set(), selOp: null, show: 'all', iq: '', poShow: 'open', dnShow: 'active', details: matchMedia('(min-width: 900px)').matches };
 
 // ---------- Link to the delivery tracker (Parcel Tracker, on this same site) ----------
-// Each delivery note is handed to the tracker. The tracker answers with a tracking code; from then
-// on its courier status (on the way, delivered with the handover PIN) flows back into Quayside.
+// The tracker follows each ship's order from the moment it is ordered from the suppliers: with the
+// supplier, in our warehouse, on the ship. "Send out" lets a driver take it; the customer sees him
+// on the map once he presses "On my way" on his phone. It goes through a test room online, so the
+// driver and the customer can be other people on their own phones.
 let T = null;
-const linking = new Map(); // delivery note id -> the hand-over in progress
 let trackSig = '', renderLater = false;
-import('../parcel-tracker/connect.js?v=20261030b')
-  .then(m => { T = m; T.onChange(syncTracker); syncTracker(); render(); })
+const pushed = new Map();  // operation id -> what was last sent to the tracker
+const saving = new Map();  // operation id -> a save that is running
+let paused = false;        // true while the test room is being emptied
+import('../parcel-tracker/connect.js?v=20261031a')
+  .then(m => { T = m; T.useRoom(Q.room()); T.onChange(syncTracker); Q.subscribe(syncTracker); render(); })
   .catch(err => { console.warn('Delivery tracker not reachable', err); render(); });
+
+const tracker = op => Q.trackerOf(op.id);
+// An order is followed once something was ordered from a supplier, until it is invoiced
+const followed = op => !op.invoice && (!!tracker(op) || op.items.some(i => i.po || i.rcv || i.dn));
+const ITEM_TO_STAGE = { needs_price: 'pending', to_order: 'pending', ordered: 'supplier', received: 'warehouse', on_way: 'on_way', delivered: 'ship' };
+function lineStage(w, it) {
+  const s = Q.itemStatus(w, it);
+  if (s === 'packed') return Q.dnById(w, it.dn)?.status === 'ready' ? 'packed' : 'warehouse';
+  return ITEM_TO_STAGE[s] || 'pending';
+}
+function orderFor(w, op) {
+  const v = Q.vessel(w, op.vessel), t = tracker(op);
+  const { port, point } = Q.pointInfo(op.port, op.point);
+  const lines = op.items.map(i => ({ id: i.id, desc: i.desc, qty: i.qty, unit: i.unit, stage: lineStage(w, i) }));
+  const st = lines.map(l => l.stage);
+  const stage = st.length && st.every(x => x === 'ship') ? 3 : st.some(x => x === 'pending' || x === 'supplier') ? 1 : 2;
+  const trip = w.dns.find(d => d.op === op.id && (d.status === 'ready' || d.status === 'on_way'));
+  const tripLines = trip ? op.items.filter(i => i.dn === trip.id) : [];
+  return {
+    code: t?.code, pin: t?.pin, title: `${v?.name || 'Vessel'}: ship stores`, from: 'Quayside Marine Supply', customer: v?.name || '',
+    dest: { lat: point.lat, lng: point.lng }, destLabel: `${op.point}, ${op.port}`,
+    address: `Alongside ${v?.name || 'the vessel'}${v?.imo ? `, IMO ${v.imo}` : ''}`, notes: op.remark,
+    pickup: { label: port.store.name, lat: port.store.lat, lng: port.store.lng },
+    lines, stage, tripRef: trip ? trip.id : null, tripLines: tripLines.map(i => i.id),
+    tripNote: trip ? `${trip.id}: ${plural(tripLines.length, 'line')} for ${trip.point}` : '',
+    source: { system: 'quayside', ref: op.id },
+  };
+}
+// Sends an operation's order to the tracker when something about it changed
+async function pushOrder(opId) {
+  if (saving.has(opId)) { saving.get(opId).again = true; return; }
+  const job = { again: true };
+  saving.set(opId, job);
+  try {
+    while (job.again) {
+      job.again = false;
+      const w = W(), op = Q.opById(w, opId);
+      if (!op || !followed(op)) break;
+      const o = orderFor(w, op);
+      const sig = JSON.stringify(o);
+      // Nothing changed since the last send (if someone deleted it in the tracker, it stays deleted)
+      if (pushed.get(opId) === sig) break;
+      const r = await T.saveOrder(o);
+      pushed.set(opId, sig);
+      if (!o.code) {
+        Q.setTracker(opId, { code: r.code, pin: r.pin });
+        Q.commit('link to tracker', w => {
+          if (!Q.opById(w, opId)) return false;
+          w.log.unshift({ t: Date.now(), op: opId, text: `The delivery tracker follows this order as ${r.code}` });
+          return true;
+        }, { undo: false });
+      }
+    }
+  } catch (e) { console.warn('Could not update the tracker for', opId, e); pushed.delete(opId); }
+  finally { saving.delete(opId); }
+}
+// Runs when the tracker's data changes (the driver moved, took a job, delivered) and when ours does
+function syncTracker() {
+  if (!T || !T.isReady() || paused) return;
+  const w = W(), now = Date.now();
+  // 1. What the driver did comes back into Quayside
+  const moves = [];
+  for (const op of w.ops) {
+    const t = tracker(op), st = t && T.status(t.code);
+    if (!st || !st.trip) continue;
+    const dn = Q.dnById(w, st.trip.ref);
+    if (!dn || dn.op !== op.id) continue;
+    if (dn.status === 'ready' && ['picked_up', 'on_the_way'].includes(st.status)) moves.push({ id: dn.id, send: st.sentAt || now, who: st.courierName });
+    if (dn.status !== 'delivered' && st.status === 'delivered') moves.push({ id: dn.id, deliver: st.deliveredAt || now, by: st.receivedBy || (st.courierName ? `PIN checked by ${st.courierName}` : 'PIN checked') });
+  }
+  if (moves.length) {
+    Q.commit('tracker update', w => {
+      for (const m of moves) {
+        const dn = Q.dnById(w, m.id);
+        if (!dn) continue;
+        if (m.send) Q.sendDN(w, dn, m.send, m.who);
+        if (m.deliver) Q.deliverDN(w, dn, m.by, m.deliver);
+      }
+      return true;
+    }, { undo: false });
+    const done = moves.filter(m => m.deliver).map(m => m.id), sent = moves.filter(m => m.send && !m.deliver);
+    if (done.length) toast(`${done.join(', ')} is on the ship (from the tracker)`, false);
+    else if (sent.length) toast(`${sent.map(m => m.id).join(', ')}: ${sent[0].who || 'the driver'} has it`, false);
+    return; // that change runs this again with the new data
+  }
+  // 2. Our side goes to the tracker
+  for (const op of w.ops) if (followed(op)) pushOrder(op.id);
+  // 3. Orders sent from here that no longer exist here leave the room
+  const known = new Set(w.ops.map(o => tracker(o)?.code).filter(Boolean));
+  for (const st of T.sentBy('quayside')) if (!known.has(st.code) && now - (st.createdAt || 0) > 20e3) T.remove(st.code);
+  // 4. Distances change every few seconds: update those words in place; redraw when a status changes
+  for (const el of document.querySelectorAll('[data-trackcode]')) { const st = T.status(el.dataset.trackcode); if (st) el.textContent = trackText(st); }
+  const sig = w.ops.map(o => { const t = tracker(o), st = t && T.status(t.code); return `${o.id}:${st ? `${st.status}:${st.hasDriver}:${st.courierName}:${st.trip && st.trip.ref}` : '-'}`; }).join('|');
+  if (sig !== trackSig) { trackSig = sig; if (busy()) renderLater = true; else render(); }
+}
+const busy = () => { const a = document.activeElement; return $('#modal').open || (a && view.contains(a) && /INPUT|SELECT|TEXTAREA/.test(a.tagName)); };
+document.addEventListener('focusout', () => setTimeout(() => { if (renderLater && !busy()) { renderLater = false; render(); } }, 60));
+// Clears our data and the test room together; nothing is sent to the tracker until both are empty
+async function emptyRoom(clearHere) {
+  paused = true;
+  try {
+    pushed.clear(); Q.clearTrackers();
+    clearHere();
+    if (T) { try { await T.clearRoom(); } catch {} }
+  } finally { paused = false; syncTracker(); }
+}
+const until = async (fn, ms = 5000) => { const t0 = Date.now(); while (!fn() && Date.now() - t0 < ms) await new Promise(r => setTimeout(r, 150)); return fn(); };
 
 function tripFor(w, dn) {
   const op = Q.opById(w, dn.op);
@@ -64,103 +175,57 @@ function tripFor(w, dn) {
   const byBoat = !!point.sea;
   return {
     origin: port.store, roadTo: byBoat ? port.jetty : null, sea: byBoat ? point.sea : [],
-    courierName: byBoat ? 'Launch boat Sea Runner (demo)' : 'Quayside truck 2 (demo)',
+    courierName: byBoat ? 'Pretend launch boat' : 'Pretend driver',
     receiver: `the Chief Officer of ${Q.vessel(w, op.vessel)?.name || 'the vessel'}`,
   };
 }
-function linkDN(dnId) {
-  if (!T) return Promise.resolve();
-  if (!linking.has(dnId)) linking.set(dnId, handOver(dnId).finally(() => linking.delete(dnId)));
-  return linking.get(dnId);
-}
-async function handOver(dnId) {
-  try {
-    let w = W();
-    const dn = Q.dnById(w, dnId);
-    if (!dn || dn.tracking || dn.status === 'delivered') return;
-    const op = Q.opById(w, dn.op), v = Q.vessel(w, op.vessel), lines = op.items.filter(i => i.dn === dn.id);
-    const { point } = Q.pointInfo(op.port, dn.point);
-    const r = await T.createDelivery({
-      title: `${v?.name || 'Vessel'}: ship stores (${dn.id})`, from: 'Quayside Marine Supply',
-      dest: { lat: point.lat, lng: point.lng }, destLabel: `${dn.point}, ${op.port}`,
-      address: `Alongside ${v?.name || 'the vessel'}${v?.imo ? `, IMO ${v.imo}` : ''}`, notes: op.remark,
-      lines: lines.map(i => ({ desc: i.desc, qty: i.qty, unit: i.unit })), source: { system: 'quayside', ref: dn.id, op: op.id },
-    });
-    const ok = Q.commit('link to tracker', w => {
-      const d = Q.dnById(w, dnId);
-      if (!d || d.tracking) return false;
-      d.tracking = { code: r.code, pin: r.pin, at: Date.now() };
-      Q.opById(w, d.op) && w.log.unshift({ t: Date.now(), op: d.op, text: `${d.id} handed to the delivery tracker as ${r.code}` });
-      return true;
-    }, { undo: false });
-    w = W();
-    if (ok && Q.dnById(w, dnId)?.status === 'on_way') await T.dispatch(r.code, tripFor(w, Q.dnById(w, dnId)));
-  } catch (e) { console.warn('Could not hand', dnId, 'to the tracker', e); }
-}
-async function dispatchDN(dnId) {
-  const w = W(), dn = Q.dnById(w, dnId);
-  if (!T || !dn) return;
-  if (!dn.tracking) return linkDN(dnId); // links, then sends it out because the note is already on its way
-  await T.dispatch(dn.tracking.code, tripFor(w, dn));
-}
-// Runs whenever the tracker's data changes (also from another tab)
-function syncTracker() {
-  if (!T) return;
-  const w = W(), now = Date.now();
-  for (const dn of w.dns) if (!dn.tracking && dn.status !== 'delivered') linkDN(dn.id);
-  const moves = [];
-  for (const dn of w.dns) {
-    const st = dn.tracking && T.status(dn.tracking.code);
-    if (!st) continue;
-    if (dn.status === 'prepared' && ['picked_up', 'on_the_way'].includes(st.status)) moves.push({ id: dn.id, send: st.sentAt || now });
-    if (dn.status !== 'delivered' && st.status === 'delivered') moves.push({ id: dn.id, deliver: st.deliveredAt || now, by: st.receivedBy });
-  }
-  if (moves.length) {
-    Q.commit('tracker update', w => {
-      for (const m of moves) {
-        const dn = Q.dnById(w, m.id);
-        if (!dn) continue;
-        if (m.send) Q.sendDN(w, dn, m.send);
-        if (m.deliver) Q.deliverDN(w, dn, m.by, m.deliver);
-      }
-      return true;
-    }, { undo: false });
-    const done = moves.filter(m => m.deliver).map(m => m.id);
-    if (done.length) toast(`${done.join(', ')} delivered on board (from the tracker)`, false);
-  }
-  // A note that no longer exists here (unpacked, undone, demo reset) is cancelled in the tracker
-  const known = new Set(W().dns.map(d => d.tracking?.code).filter(Boolean));
-  for (const st of T.sentBy('quayside')) {
-    if (!known.has(st.code) && !['delivered', 'cancelled'].includes(st.status) && now - st.createdAt > 15e3) T.cancel(st.code, 'The delivery note was removed in Quayside');
-  }
-  // Distances change every second: update those words in place, and redraw only when a status changes
-  for (const el of document.querySelectorAll('[data-trackcode]')) {
-    const st = T.status(el.dataset.trackcode);
-    if (st) el.textContent = trackText(st);
-  }
-  const sig = W().dns.map(d => `${d.id}:${d.status}:${d.tracking ? T.status(d.tracking.code)?.status : '-'}`).join('|');
-  if (sig !== trackSig) { trackSig = sig; if (busy()) renderLater = true; else render(); }
-}
-const busy = () => { const a = document.activeElement; return $('#modal').open || (a && view.contains(a) && /INPUT|SELECT|TEXTAREA/.test(a.tagName)); };
-document.addEventListener('focusout', () => setTimeout(() => { if (renderLater && !busy()) { renderLater = false; render(); } }, 60));
-
 function trackText(st) {
-  if (st.status === 'on_the_way') {
-    const who = st.courierName.replace(/ \(demo\)$/, '');
-    if (st.kmLeft == null) return `${who} on the way`;
-    return st.kmLeft < 0.15 ? `${who} alongside, handing over` : `${who}, ${st.kmLeft.toFixed(1)} km to go`;
+  const who = (st.courierName || 'The driver').replace(/ \(demo\)$/, '');
+  const waiting = st.hasDriver ? ` · ${who} will take it` : '';
+  switch (st.status) {
+    case 'at_supplier': return `With the supplier${waiting}`;
+    case 'in_warehouse': return `In the warehouse${waiting}`;
+    case 'waiting': return 'Packed, waiting for a driver';
+    case 'assigned': return `${who} will pick it up`;
+    case 'picked_up': return `${who} has it, not moving yet`;
+    case 'on_the_way': return st.kmLeft == null ? `${who} is on the way` : st.kmLeft < 0.15 ? `${who} is alongside, handing over` : `${who} is on the way, ${st.kmLeft.toFixed(1)} km away`;
+    case 'delivered': return st.receivedBy ? `On the ship (${st.receivedBy})` : 'On the ship';
+    case 'problem': return `Problem: ${st.problem || 'see the tracker'}`;
   }
-  if (st.status === 'delivered') return st.receivedBy ? `Delivered to ${st.receivedBy}` : 'Delivered';
-  if (st.status === 'problem') return `Problem: ${st.problem || 'see the tracker'}`;
   return st.label;
 }
-function trackChip(dn) {
-  if (!dn.tracking) {
-    if (dn.status === 'delivered') return '<span class="muted small">Not tracked</span>';
-    return `<span class="track-chip">${icon('link')}${T ? 'Handing to the tracker…' : 'Tracker not reachable'}</span>`;
+// The bar on an operation's page: its tracker code, where it is, the PIN and the two links
+function trackerBar(op) {
+  const t = tracker(op);
+  if (!t) return `<div class="tracker-bar">${icon('link')}<span>${!T ? 'The delivery tracker is not reachable right now.' : followed(op) ? 'Sending this order to the delivery tracker…' : 'The delivery tracker starts following this order once it is ordered from the suppliers.'}</span></div>`;
+  const st = T && T.status(t.code);
+  const done = st && st.status === 'delivered';
+  return `<div class="tracker-bar on">${icon('link')}
+    <span><b>Tracker ${esc(t.code)}</b> · <span data-trackcode="${esc(t.code)}">${st ? esc(trackText(st)) : 'connecting…'}</span>
+      ${!done ? `<small class="muted block">Handover PIN for the ship: <b class="pin">${esc(t.pin)}</b>. The ship tells the driver when it has the goods.</small>` : ''}</span>
+    ${T ? `<span class="tb-actions"><a class="btn sm" href="${T.trackUrl(t.code)}" target="_blank" rel="noopener">Open in tracker</a>
+      <button class="btn sm ghost" data-act="copyLink" data-id="track:${esc(t.code)}" title="The link the ship or the agent follows the order with">Customer link</button>
+      ${!done ? `<button class="btn sm ghost" data-act="copyLink" data-id="driver:${esc(t.code)}" title="The link the driver opens on his phone to take the job">Driver link</button>` : ''}</span>` : ''}
+  </div>`;
+}
+// A delivery note's live line, when it is the trip going on now
+function dnChip(w, dn) {
+  const op = Q.opById(w, dn.op), t = op && tracker(op), st = t && T && T.status(t.code);
+  if (!st || !st.trip || st.trip.ref !== dn.id || dn.status === 'delivered') return '';
+  return `<span class="track-chip on">${icon('link')}<span data-trackcode="${esc(t.code)}">${esc(trackText(st))}</span></span>`;
+}
+function dnActions(w, d) {
+  const op = Q.opById(w, d.op), t = op && tracker(op), st = t && T && T.status(t.code);
+  const out = [];
+  if (d.status === 'prepared') out.push(`<button class="btn sm" data-act="dnSend" data-id="${d.id}" title="Packed and ready: a driver can take it">${icon('truck')}Send out</button>`);
+  if (d.status === 'ready' && t && T) {
+    out.push(`<button class="btn sm" data-act="copyLink" data-id="driver:${esc(t.code)}">${icon('link')}Driver link</button>`);
+    if (!st || !st.hasDriver || st.pretend) out.push(`<button class="btn sm ghost" data-act="pretend" data-id="${d.id}" title="For testing alone: a pretend driver takes it from this page">Pretend driver</button>`);
   }
-  const code = dn.tracking.code, st = T && T.status(code);
-  return `<span class="track-chip on">${icon('link')}${T ? `<a href="${T.trackUrl(code)}" target="_blank" rel="noopener" title="Follow it in Parcel Tracker">${code}</a>` : code}${st ? ` · <span data-trackcode="${code}">${esc(trackText(st))}</span>` : ''}</span>`;
+  if (d.status === 'ready' || d.status === 'on_way') out.push(`<button class="btn sm ghost" data-act="dnDeliver" data-id="${d.id}">${icon('check')}Delivered</button>`);
+  out.push(`<button class="btn sm ghost" data-act="print" data-id="dn:${d.id}" aria-label="Print ${d.id}">${icon('print')}</button>`);
+  out.push(`<button class="btn sm ghost" data-act="dnRemove" data-id="${d.id}" aria-label="Remove ${d.id}" title="Remove this delivery note">${icon('trash')}</button>`);
+  return out.join('');
 }
 
 // ---------- Router ----------
@@ -250,12 +315,23 @@ function nextStep(w, op) {
     case 'ready': {
       const rcv = by('received');
       if (rcv.length) return { text: `${plural(rcv.length, 'line')} in the store. Pack them on a delivery note.`, btn: ['nextDN', 'Create delivery note', 'truck'] };
+      const out = dns.find(d => d.status === 'ready');
+      if (out) {
+        const t = tracker(op), st = t && T && T.status(t.code);
+        const who = st && st.hasDriver && !st.pretend ? st.courierName : '';
+        return {
+          text: who ? `${out.id} is ready. ${who} will pick it up; you see him on the map once he presses "On my way".`
+            : `${out.id} is ready to go out. Send the driver his link; you see him on the map once he presses "On my way".`,
+          btn: t && T ? ['copyLink', 'Copy driver link', 'link', `driver:${t.code}`] : null,
+          alt: t && T && !who ? ['pretend', 'Pretend driver', 'magic', out.id] : null,
+        };
+      }
       const dn = dns.find(d => d.status === 'prepared');
-      return { text: `${dn.id} is packed. Send it out to ${dn.point}.`, btn: ['dnSend', 'Send it out', 'truck', dn.id] };
+      return { text: `${dn.id} is packed. Send it out so a driver can take it.`, btn: ['dnSend', 'Send it out', 'truck', dn.id] };
     }
     case 'delivering': {
-      const dn = dns.find(d => d.status === 'on_way');
-      return { text: `${dn.id} is on the way to ${dn.point} (left ${rel(dn.sentAt)}).`, btn: ['dnDeliver', 'Mark delivered', 'check', dn.id], link: dn.tracking && T ? [T.trackUrl(dn.tracking.code), 'Follow it live'] : null };
+      const dn = dns.find(d => d.status === 'on_way'), t = tracker(op);
+      return { text: `${dn.id} is on the way to ${dn.point}${dn.driver ? ` with ${dn.driver}` : ''} (left ${rel(dn.sentAt)}).`, btn: ['dnDeliver', 'Mark delivered', 'check', dn.id], link: t && T ? [T.trackUrl(t.code), 'Follow it live'] : null };
     }
     case 'delivered': return { text: 'Everything is on board. Raise the invoice.', btn: ['invoice', 'Create invoice', 'check'] };
     case 'invoiced': return { text: `Invoice ${op.invoice.no} raised on ${fDate(op.invoice.date)} for ${money(op.invoice.total)}.`, btn: ['print', 'Print invoice', 'print', 'invoice'], done: true };
@@ -344,7 +420,7 @@ function opsList(r) {
   </div>
   <section class="card flush">
     <div class="table-wrap"><table class="grid">
-      <thead><tr><th>Operation</th><th>Opened</th><th>Vessel</th><th>Port / arrival point</th><th>ETA</th><th>Marine</th><th>Purchasing</th><th class="r">Lines</th><th class="r">Value</th><th>Status</th><th>Remark</th></tr></thead>
+      <thead><tr><th>Operation</th><th>Opened</th><th>Vessel</th><th>Port / arrival point</th><th>ETA</th><th>Marine</th><th>Purchasing</th><th class="r">Lines</th><th class="r">Value</th><th>Status</th><th>Remark</th><th></th></tr></thead>
       <tbody>${rows.map(({ o, s, v }) => `<tr data-href="#/op/${o.id}" class="clickable">
         <td><a href="#/op/${o.id}" class="strong">${o.id}</a></td>
         <td class="nowrap">${fDate(o.date)}</td>
@@ -356,7 +432,7 @@ function opsList(r) {
         <td class="r">${o.items.length}</td>
         <td class="r nowrap">${money(Q.totals(o.items).sell)}</td>
         <td>${pill(Q.OP_STATUS[s])}</td>
-        <td class="remark">${esc(o.remark)}</td></tr>`).join('') || `<tr><td colspan="11" class="empty">No operations match.</td></tr>`}</tbody>
+        <td class="remark">${esc(o.remark)}</td><td class="r"><button class="btn sm ghost" data-act="opRemove" data-id="${o.id}" aria-label="Delete ${o.id}" title="Delete this operation">${icon('trash')}</button></td></tr>`).join('') || `<tr><td colspan="12" class="empty">No operations match.</td></tr>`}</tbody>
     </table></div>
     <div class="table-foot">Count of operations: <b>${rows.length}</b>${filtered ? ` of ${w.ops.length}` : ''}</div>
   </section>`;
@@ -450,12 +526,15 @@ function opDetail(r) {
     <div class="head-actions">
       <button class="btn" data-act="print" data-id="quote">${icon('print')}Quotation</button>
       ${op.invoice ? `<button class="btn" data-act="print" data-id="invoice">${icon('print')}Invoice</button>` : ''}
+      <button class="btn ghost danger" data-act="opRemove" data-id="${op.id}" title="Delete this operation and everything on it">${icon('trash')}Delete</button>
     </div>
   </div>
 
   <ol class="stepper">${STEPS.map((s, i) => `<li class="${i < at ? 'done' : i === at ? 'now' : ''}"><i>${i < at ? icon('check') : i + 1}</i><span>${s}</span></li>`).join('')}</ol>
 
   <div class="next${ns.done ? ' is-done' : ''}"><p>${esc(ns.text)}</p><div class="next-actions">${ns.link ? `<a class="btn" href="${ns.link[0]}" target="_blank" rel="noopener">${icon('link')}${esc(ns.link[1])}</a>` : ''}${ns.alt ? btnHtml(ns.alt, '') : ''}${ns.btn ? btnHtml(ns.btn) : ''}</div></div>
+
+  ${trackerBar(op)}
 
   <div class="cols op-cols">
     <details class="card details-card" data-details ${ui.details ? 'open' : ''}>
@@ -481,10 +560,10 @@ function opDetail(r) {
     </details>
     <section class="card"><div class="card-head"><h2>Orders list</h2><button class="btn sm" data-act="addOrder">${icon('plus')}Add order</button></div>
       ${op.orders.length ? `<div class="table-wrap"><table class="grid compact">
-        <thead><tr><th>Requisition</th><th>From</th><th class="r">On board</th></tr></thead>
+        <thead><tr><th>Requisition</th><th>From</th><th class="r">On board</th><th></th></tr></thead>
         <tbody>${op.orders.map(o => {
           const ls = op.items.filter(i => i.order === o.id); const on = ls.filter(i => sts.get(i.id) === 'delivered').length;
-          return `<tr class="clickable${ui.show === o.id ? ' picked' : ''}" data-act="show" data-id="${o.id}"><td><b>${esc(o.ref)}</b><small class="muted block">${fDate(o.date)}</small></td><td>${esc(o.from)}</td><td class="r nowrap">${on} of ${plural(ls.length, 'line')}</td></tr>`;
+          return `<tr class="clickable${ui.show === o.id ? ' picked' : ''}" data-act="show" data-id="${o.id}"><td><b>${esc(o.ref)}</b><small class="muted block">${fDate(o.date)}</small></td><td>${esc(o.from)}</td><td class="r nowrap">${on} of ${plural(ls.length, 'line')}</td><td class="r"><button class="btn sm ghost" data-act="orderRemove" data-id="${o.id}" aria-label="Remove order ${esc(o.ref)}" title="Remove this order and its lines">${icon('trash')}</button></td></tr>`;
         }).join('')}</tbody></table></div>
         <p class="muted small">Tap an order to show only its lines.</p>` : '<p class="empty">No orders yet. When the vessel sends its requisition, add it here.</p>'}
       <div class="sum-box">
@@ -513,7 +592,7 @@ function opDetail(r) {
       <button class="btn sm" data-act="bulkPO" ${selBy('to_order') ? '' : 'disabled'}>${icon('po')}Order (${selBy('to_order')})</button>
       <button class="btn sm" data-act="bulkRcv" ${selBy('ordered') ? '' : 'disabled'}>${icon('check')}Received (${selBy('ordered')})</button>
       <button class="btn sm" data-act="bulkDN" ${selBy('received') ? '' : 'disabled'}>${icon('truck')}Pack on delivery note (${selBy('received')})</button>
-      <button class="btn sm danger" data-act="bulkRemove" ${selBy('to_order') + selBy('needs_price') ? '' : 'disabled'}>${icon('trash')}Remove</button>
+      <button class="btn sm danger" data-act="bulkRemove">${icon('trash')}Remove</button>
       <button class="btn sm ghost" data-act="clearSel">Clear</button>
     </div>` : ''}
     <div class="table-wrap"><table class="grid lines">
@@ -550,20 +629,16 @@ function opDetail(r) {
         return `<li><div><b>${p.id}</b> ${pill(Q.PO_STATUS[ps])}<span class="muted block">${esc(Q.supplier(w, p.sup)?.name)} · ${plural(ls.length, 'line')} · ${money(Q.totals(ls).cost)} · sent ${fShort(p.date)}</span></div>
           <div class="doc-actions">${ps !== 'received' ? `<button class="btn sm" data-act="poRcv" data-id="${p.id}">${icon('check')}Received</button>` : ''}
           <button class="btn sm ghost" data-act="print" data-id="po:${p.id}" aria-label="Print ${p.id}">${icon('print')}</button>
-          ${ps === 'sent' ? `<button class="btn sm ghost" data-act="poCancel" data-id="${p.id}" aria-label="Cancel ${p.id}">${icon('x')}</button>` : ''}</div></li>`;
+          <button class="btn sm ghost" data-act="poRemove" data-id="${p.id}" aria-label="Remove ${p.id}" title="Remove this purchase order">${icon('trash')}</button></div></li>`;
       }).join('')}</ul>` : '<p class="empty">None yet. Select priced lines and press Order, or use the button above.</p>'}
     </section>
     <section class="card"><div class="card-head"><h2>Delivery notes</h2></div>
       ${dns.length ? `<ul class="docs">${dns.map(d => {
         const ls = op.items.filter(i => i.dn === d.id);
-        const when = d.status === 'delivered' ? `delivered ${fShort(d.deliveredAt)}${d.signedBy ? `, signed by ${esc(d.signedBy)}` : ''}` : d.status === 'on_way' ? `left ${fShort(d.sentAt)}` : `packed ${fShort(d.date)}`;
+        const when = d.status === 'delivered' ? `delivered ${fShort(d.deliveredAt)}${d.signedBy ? `, signed by ${esc(d.signedBy)}` : ''}` : d.status === 'on_way' ? `left ${fShort(d.sentAt)}${d.driver ? ` with ${esc(d.driver)}` : ''}` : d.status === 'ready' ? `ready since ${fShort(d.releasedAt)}` : `packed ${fShort(d.date)}`;
         return `<li><div><b>${d.id}</b> ${pill(Q.DN_STATUS[d.status])}<span class="muted block">${plural(ls.length, 'line')} · to ${esc(d.point)} · ${when}</span>
-          ${trackChip(d)}${d.tracking && d.status !== 'delivered' ? `<span class="muted small block pin-line">Handover PIN for the ship: <b>${esc(d.tracking.pin)}</b> (the courier needs it to finish)</span>` : ''}</div>
-          <div class="doc-actions">${d.status === 'prepared' ? `<button class="btn sm" data-act="dnSend" data-id="${d.id}">${icon('truck')}Send out</button>` : ''}
-          ${d.status === 'on_way' ? `<button class="btn sm" data-act="dnDeliver" data-id="${d.id}">${icon('check')}Delivered</button>` : ''}
-          ${d.tracking && d.status !== 'delivered' && T ? `<button class="btn sm ghost" data-act="copyCourier" data-id="${d.tracking.code}" title="Copy the link a real driver opens to take this delivery">Driver link</button>` : ''}
-          <button class="btn sm ghost" data-act="print" data-id="dn:${d.id}" aria-label="Print ${d.id}">${icon('print')}</button>
-          ${d.status === 'prepared' ? `<button class="btn sm ghost" data-act="dnCancel" data-id="${d.id}" aria-label="Unpack ${d.id}">${icon('x')}</button>` : ''}</div></li>`;
+          ${dnChip(w, d)}</div>
+          <div class="doc-actions">${dnActions(w, d)}</div></li>`;
       }).join('')}</ul>` : '<p class="empty">Nothing packed yet. Lines go on a delivery note once they are in the store.</p>'}
     </section>
   </div>
@@ -590,7 +665,7 @@ function posList() {
       return `<tr><td class="strong">${p.id}</td><td class="nowrap">${fShort(p.date)}</td><td>${esc(Q.supplier(w, p.sup)?.name)}</td>
         <td><a href="#/op/${op.id}">${op.id}</a></td><td>${esc(Q.vessel(w, op.vessel)?.name)}</td><td class="nowrap">${fShort(op.eta)}</td>
         <td class="r">${ls.length}</td><td class="r nowrap">${money(Q.totals(ls).cost)}</td><td>${pill(Q.PO_STATUS[s])}</td>
-        <td class="nowrap r">${s !== 'received' ? `<button class="btn sm" data-act="poRcv" data-id="${p.id}">${icon('check')}Received</button>` : ''}<button class="btn sm ghost" data-act="print" data-id="po:${p.id}" aria-label="Print ${p.id}">${icon('print')}</button></td></tr>`;
+        <td class="nowrap r">${s !== 'received' ? `<button class="btn sm" data-act="poRcv" data-id="${p.id}">${icon('check')}Received</button>` : ''}<button class="btn sm ghost" data-act="print" data-id="po:${p.id}" aria-label="Print ${p.id}">${icon('print')}</button><button class="btn sm ghost" data-act="poRemove" data-id="${p.id}" aria-label="Remove ${p.id}">${icon('trash')}</button></td></tr>`;
     }).join('') || '<tr><td colspan="10" class="empty">Nothing waiting on suppliers.</td></tr>'}</tbody>
   </table></div></section>`;
 }
@@ -602,17 +677,17 @@ function dnsList() {
   const activeN = list.filter(x => x.d.status !== 'delivered').length;
   if (ui.dnShow === 'active') list = list.filter(x => x.d.status !== 'delivered');
   return `
-  <div class="page-head"><div><h1>Deliveries</h1><p class="lead">Delivery notes going out to the ships. Each one is handed to <a href="../parcel-tracker/?demo" target="_blank" rel="noopener">Parcel Tracker</a>, which follows the courier to the ship and reports back.</p></div>
+  <div class="page-head"><div><h1>Deliveries</h1><p class="lead">Delivery notes going out to the ships. <a href="${T ? new URL(`../parcel-tracker/?room=${Q.room()}`, location.href).href : '../parcel-tracker/'}" target="_blank" rel="noopener">Parcel Tracker</a> follows every order to the ship. Test room <b class="mono">${esc(Q.room())}</b>: everyone you send a link to sees this room's orders.</p></div>
     <div class="head-actions"><button class="btn test" data-act="testDelivery" title="Makes an example ship, packs its items and sends them out">${icon('magic')}Send a test delivery</button></div></div>
   <div class="seg page-seg"><button class="${ui.dnShow === 'active' ? 'on' : ''}" data-act="dnShow" data-id="active">Packed or on the way <b>${activeN}</b></button><button class="${ui.dnShow === 'all' ? 'on' : ''}" data-act="dnShow" data-id="all">All <b>${w.dns.length}</b></button></div>
   <section class="card flush"><div class="table-wrap"><table class="grid">
     <thead><tr><th>Delivery note</th><th>Packed</th><th>Operation</th><th>Vessel</th><th>Deliver to</th><th class="r">Lines</th><th class="r">Value</th><th>Status</th><th>Tracking</th><th></th></tr></thead>
     <tbody>${list.map(({ d, op }) => {
-      const ls = op.items.filter(i => i.dn === d.id);
+      const ls = op.items.filter(i => i.dn === d.id), t = tracker(op);
       return `<tr><td class="strong">${d.id}</td><td class="nowrap">${fShort(d.date)}</td><td><a href="#/op/${op.id}">${op.id}</a></td><td>${esc(Q.vessel(w, op.vessel)?.name)}</td>
         <td>${esc(d.point)}</td><td class="r">${ls.length}</td><td class="r nowrap">${money(Q.totals(ls).sell)}</td><td>${pill(Q.DN_STATUS[d.status])}${d.status === 'delivered' && d.signedBy ? `<small class="muted block">${esc(d.signedBy)}</small>` : ''}</td>
-        <td>${trackChip(d)}</td>
-        <td class="nowrap r">${d.status === 'prepared' ? `<button class="btn sm" data-act="dnSend" data-id="${d.id}">${icon('truck')}Send out</button>` : ''}${d.status === 'on_way' ? `<button class="btn sm" data-act="dnDeliver" data-id="${d.id}">${icon('check')}Delivered</button>` : ''}<button class="btn sm ghost" data-act="print" data-id="dn:${d.id}" aria-label="Print ${d.id}">${icon('print')}</button></td></tr>`;
+        <td>${dnChip(w, d) || (t ? `<span class="mono small">${esc(t.code)}</span>` : '<span class="muted small">Not followed</span>')}</td>
+        <td class="nowrap r">${dnActions(w, d)}</td></tr>`;
     }).join('') || '<tr><td colspan="10" class="empty">No deliveries out right now.</td></tr>'}</tbody>
   </table></div></section>`;
 }
@@ -799,7 +874,7 @@ function printDoc(kind) {
     <div><small>Operation</small><b>${o.id}</b><span>Agent: ${esc(o.agency)}</span><span>ETA ${fDT(o.eta)}</span></div></section>
     <table class="d-table"><thead><tr><th>#</th><th>Code</th><th>Description</th><th>Unit</th><th class="r">Qty</th><th class="r">Checked</th></tr></thead>
     <tbody>${ls.map((i, n) => `<tr><td>${n + 1}</td><td>${esc(i.code)}</td><td>${esc(i.desc)}</td><td>${esc(i.unit)}</td><td class="r">${num(i.qty)}</td><td class="r">☐</td></tr>`).join('')}</tbody></table>
-    ${dn.tracking ? `<p class="d-note">Track this delivery: code <b>${esc(dn.tracking.code)}</b>${T ? ` at ${esc(T.trackUrl(dn.tracking.code))}` : ''}</p>` : ''}
+    ${Q.trackerOf(o.id) ? `<p class="d-note">Follow this order: code <b>${esc(Q.trackerOf(o.id).code)}</b>${T ? ` at ${esc(T.trackUrl(Q.trackerOf(o.id).code))}` : ''}</p>` : ''}
     <section class="d-sign"><div><small>Received on board by (name and rank)</small><b>${esc(dn.signedBy) || '&nbsp;'}</b></div><div><small>Date and time</small><b>${dn.deliveredAt ? fDT(dn.deliveredAt) : '&nbsp;'}</b></div><div><small>Ship's stamp</small><b>&nbsp;</b></div></section>`;
   }
   $('#print').innerHTML = `<div class="doc">${html}<p class="d-foot">Printed from the Quayside demo · ${fDT(Date.now())}</p></div>`;
@@ -809,14 +884,17 @@ function printDoc(kind) {
 // ---------- Buttons ----------
 const ACT = {
   undo() { const l = Q.undo(); if (l) toast(`Undone: ${l}`, false); },
-  reset() { if (confirm('Put the sample data back? Your changes in this browser will be lost.')) { Q.reset(); ui.sel.clear(); toast('Demo reset', false); } },
+  async reset() {
+    if (!confirm('Put the sample data back? Your changes in this browser will be lost.')) return;
+    await emptyRoom(() => Q.reset());
+    ui.sel.clear(); toast('Demo reset', false);
+  },
   async startEmpty() {
-    Q.commit('clear everything', w => { w.ops = []; w.pos = []; w.dns = []; w.log = []; return true; });
+    await emptyRoom(() => Q.commit('clear everything', w => { w.ops = []; w.pos = []; w.dns = []; w.log = []; return true; }));
     ui.sel.clear();
-    if (T) await T.clearDemo();
     location.hash = '#/';
     render();
-    toast('Cleared. Add your own operation with New operation.');
+    toast('Cleared, here and in the tracker. Add your own operation with New operation.', false);
   },
   closeModal,
   navToggle() { document.body.classList.toggle('nav-open'); },
@@ -851,16 +929,11 @@ const ACT = {
     location.hash = `#/op/${r.op.id}`;
     toast(`${Q.vessel(W(), r.op.vessel)?.name}: everything is in the store. Press Create delivery note, then Send out.`);
   },
-  async testDelivery() {
+  testDelivery() {
     const r = Q.commit('test delivery', w => Q.exampleOp(w, 'sent'));
     if (!r) return;
-    const name = Q.vessel(W(), r.op.vessel)?.name;
-    if (!T) { toast(`${r.dn.id} sent to ${name}, but the tracker could not be reached`, false); return; }
-    toast(`Sending ${r.dn.id} to ${name}…`, false);
-    await linkDN(r.dn.id);
-    const dn = Q.dnById(W(), r.dn.id);
-    if (dn?.tracking) toast(`${dn.id} is on its way to ${name} at ${dn.point}. Tracker code ${dn.tracking.code}.`, false, { href: T.trackUrl(dn.tracking.code), label: 'Open in tracker' });
-    else toast(`${r.dn.id} sent, but the tracker did not answer. Try again in a moment.`, false);
+    location.hash = `#/op/${r.op.id}`;
+    toast(`${r.dn.id} for ${Q.vessel(W(), r.op.vessel)?.name} is packed and waiting for a driver. Copy the driver link and send it to someone, or press Pretend driver.`);
   },
   addOrder() {
     const op = currentOp(); if (!op) return;
@@ -890,40 +963,70 @@ const ACT = {
   },
   bulkPO() { const op = currentOp(); const made = Q.commit('create purchase orders', w => Q.createPOs(w, Q.opById(w, op.id), [...ui.sel])); if (made?.length) { ui.sel.clear(); render(); toast(`Sent ${made.map(p => p.id).join(', ')}`); } },
   bulkRcv() { const op = currentOp(); const n = Q.commit('mark received', w => Q.receive(w, Q.opById(w, op.id), [...ui.sel])); if (n) { ui.sel.clear(); render(); toast(`${plural(n, 'line')} received into the store`); } },
-  bulkDN() { const op = currentOp(); const dn = Q.commit('create delivery note', w => Q.createDN(w, Q.opById(w, op.id), [...ui.sel])); if (dn) { ui.sel.clear(); render(); toast(`Packed on ${dn.id}`); linkDN(dn.id); } },
-  bulkRemove() { const op = currentOp(); const n = Q.commit('remove lines', w => Q.removeLines(w, Q.opById(w, op.id), [...ui.sel])); if (n) { ui.sel.clear(); render(); toast(`Removed ${plural(n, 'line')}`); } },
+  bulkDN() { const op = currentOp(); const dn = Q.commit('create delivery note', w => Q.createDN(w, Q.opById(w, op.id), [...ui.sel])); if (dn) { ui.sel.clear(); render(); toast(`Packed on ${dn.id}`); } },
+  bulkRemove() { const op = currentOp(); const n = Q.commit('remove lines', w => Q.removeAnyLines(w, Q.opById(w, op.id), [...ui.sel])); if (n) { ui.sel.clear(); render(); toast(`Removed ${plural(n, 'line')}`); } },
   nextPO() { const op = currentOp(); const made = Q.commit('create purchase orders', w => { const o = Q.opById(w, op.id); return Q.createPOs(w, o, o.items.map(i => i.id)); }); if (made?.length) toast(`Sent ${plural(made.length, 'purchase order')}: ${made.map(p => p.id).join(', ')}`); },
   nextRcv() { const op = currentOp(); const n = Q.commit('mark received', w => { const o = Q.opById(w, op.id); return Q.receive(w, o, o.items.map(i => i.id)); }); if (n) toast(`${plural(n, 'line')} received into the store`); },
-  nextDN() { const op = currentOp(); const dn = Q.commit('create delivery note', w => { const o = Q.opById(w, op.id); return Q.createDN(w, o, o.items.map(i => i.id)); }); if (dn) { toast(`Packed everything on ${dn.id}`); linkDN(dn.id); } },
+  nextDN() { const op = currentOp(); const dn = Q.commit('create delivery note', w => { const o = Q.opById(w, op.id); return Q.createDN(w, o, o.items.map(i => i.id)); }); if (dn) toast(`Packed everything on ${dn.id}`); },
   poRcv(d) { const n = Q.commit('mark received', w => { const p = Q.poById(w, d.id); const o = Q.opById(w, p.op); return Q.receive(w, o, o.items.filter(i => i.po === p.id).map(i => i.id)); }); if (n) toast(`${d.id}: ${plural(n, 'line')} received`); },
-  poCancel(d) { if (Q.commit('cancel purchase order', w => Q.cancelPO(w, Q.poById(w, d.id)))) toast(`Cancelled ${d.id}`); },
+  // ----- Removing (every remove can be undone) -----
+  opRemove(d) {
+    const op = Q.opById(W(), d.id);
+    if (!op) return;
+    const t = tracker(op), name = Q.vessel(W(), op.vessel)?.name || '';
+    if (!Q.commit('delete operation', w => Q.removeOp(w, Q.opById(w, op.id)))) return;
+    pushed.delete(op.id); // so an undo sends it to the tracker again
+    if (t && T) T.remove(t.code);
+    if (parseHash().parts[0] === 'op') location.hash = '#/ops';
+    toast(`Deleted ${op.id}${name ? ` (${name})` : ''}`);
+  },
+  orderRemove(d) {
+    const op = currentOp(), o = op && op.orders.find(x => x.id === d.id);
+    if (!o || !Q.commit('remove order', w => Q.removeOrder(w, Q.opById(w, op.id), d.id))) return;
+    if (ui.show === d.id) ui.show = 'all';
+    render(); toast(`Removed order ${o.ref} and its lines`);
+  },
+  poRemove(d) { if (Q.commit('remove purchase order', w => Q.removePO(w, Q.poById(w, d.id)))) toast(`Removed ${d.id}`); },
+  dnRemove(d) { if (Q.commit('remove delivery note', w => Q.removeDN(w, Q.dnById(w, d.id)))) toast(`Removed ${d.id}; its lines are back in the warehouse`); },
+  // ----- Sending out and the driver -----
   dnSend(d) {
-    if (!Q.commit('send out', w => Q.sendDN(w, Q.dnById(w, d.id)))) return;
-    const linked = T && (Q.dnById(W(), d.id)?.tracking || linking.has(d.id));
-    toast(linked ? `${d.id} is on the way. The tracker follows the courier now.` : `${d.id} is on the way`, !linked);
-    dispatchDN(d.id);
+    if (!Q.commit('send out', w => Q.releaseDN(w, Q.dnById(w, d.id)))) return;
+    toast(T ? `${d.id} is ready to go out. Send the driver his link, or press Pretend driver to test alone.` : `${d.id} is ready to go out`);
   },
-  dnCancel(d) {
-    const code = Q.dnById(W(), d.id)?.tracking?.code;
-    if (!Q.commit('unpack delivery note', w => Q.cancelDN(w, Q.dnById(w, d.id)))) return;
-    toast(`Unpacked ${d.id}`);
-    if (code && T) T.cancel(code, 'Unpacked in Quayside');
+  copyLink(d) {
+    const [kind, code] = d.id.split(':');
+    if (!T || !code) return;
+    const url = kind === 'driver' ? T.courierUrl(code) : T.trackUrl(code);
+    const done = kind === 'driver'
+      ? 'Driver link copied. The driver opens it on his phone, types his name and takes the job.'
+      : 'Customer link copied. Whoever opens it sees the order and the driver on the map.';
+    const shown = () => toast(kind === 'driver' ? 'Copy this driver link:' : 'Copy this customer link:', false, { href: url, label: 'Open it' });
+    if (navigator.clipboard) navigator.clipboard.writeText(url).then(() => toast(done, false), shown); else shown();
   },
-  copyCourier(d) {
-    const url = T && T.courierUrl(d.id);
-    if (!url) return;
-    navigator.clipboard?.writeText(url).then(() => toast('Driver link copied. A driver opens it in Parcel Tracker to take the delivery.', false), () => toast(url, false));
+  async pretend(d) {
+    const w = W(), dn = Q.dnById(w, d.id), op = dn && Q.opById(w, dn.op), t = op && tracker(op);
+    if (!t || !T) return;
+    pushOrder(op.id);
+    if (!(await until(() => T.status(t.code)?.trip?.ref === dn.id))) { toast('The tracker has not got this trip yet. Try again in a second.', false); return; }
+    try {
+      const ok = await T.pretendDriver(t.code, tripFor(W(), dn));
+      if (ok) toast(`A pretend driver took ${dn.id} and is on his way. Watch it in the tracker.`, false, { href: T.trackUrl(t.code), label: 'Open in tracker' });
+      else toast('Someone is already driving this one.', false);
+    } catch { toast("Couldn't start the pretend driver. Check your connection.", false); }
   },
   dnDeliver(d) {
     openModal({
       title: `${d.id} delivered`,
       body: `<p class="muted">Who signed for it on board?</p><label>Received by <input name="by" placeholder="e.g. C/O D. Petrov" autofocus></label>`,
       foot: `<button type="button" class="btn ghost" data-act="closeModal">Cancel</button><button class="btn primary" type="submit">${icon('check')}Mark delivered</button>`,
-      submit: fd => {
-        const by = fd.get('by').trim(), code = Q.dnById(W(), d.id)?.tracking?.code;
-        if (!Q.commit('mark delivered', w => Q.deliverDN(w, Q.dnById(w, d.id), by))) return;
-        toast(`${d.id} delivered`, !code);
-        if (code && T) T.complete(code, by);
+      submit: async fd => {
+        const by = fd.get('by').trim(), w = W(), dn = Q.dnById(w, d.id), op = dn && Q.opById(w, dn.op), t = op && tracker(op);
+        const st = t && T && T.status(t.code);
+        // If the tracker is following this trip, mark it there; it comes back here by itself
+        if (st && st.trip && st.trip.ref === d.id) {
+          try { await T.complete(t.code, by); toast(`${d.id} delivered`, false); return; } catch {}
+        }
+        if (Q.commit('mark delivered', w => Q.deliverDN(w, Q.dnById(w, d.id), by))) toast(`${d.id} delivered`);
       },
     });
   },

@@ -37,13 +37,16 @@ One **operation** = one ship call. The flow follows the stepper on each operatio
 
 ## Connected to the delivery tracker
 
-Each delivery note is handed to [Parcel Tracker](https://gasserlol.github.io/parcel-tracker/?demo), the order tracker on the same site:
+Every ship's order is followed in [Parcel Tracker](https://gasserlol.github.io/parcel-tracker/), the order tracker on the same site, in three stages: **with the supplier**, **in the warehouse**, **on the ship**. Each item shows its own stage.
 
-1. When a note is packed, Quayside sends it to the tracker and gets back a tracking code and a handover PIN for the ship.
-2. When the note is sent out, a demo courier takes it from our store to the ship: by truck to a berth, or by truck to the launch jetty and then by boat to a ship at anchor. The trip is sped up to about two and a half minutes.
-3. The tracker reports back: the note moves to "On the way" and then "Delivered" (with who received it) by itself.
-4. Unpacking a note cancels it in the tracker.
+1. As soon as something is ordered from a supplier, Quayside sends the order to the tracker and gets back a tracking code and a handover PIN for the ship. The operation page shows them, with **Customer link** and **Driver link**.
+2. **Send out** on a delivery note makes it "Packed, waiting for a driver".
+3. The driver opens the driver link on his phone, types his name and takes the job. When he taps **On my way**, his location shows on the map, for the customer and in Quayside.
+4. At the ship he types the PIN the ship gives him. Quayside marks the note delivered by itself.
+5. **Pretend driver** does the trip from this page, for testing alone (keep the page open while it drives).
 
-"Driver link" copies the link a real driver would open to take the delivery on their phone.
+It all goes through a **test room** online: everyone you send a link to sees the same thing, live, without signing in. Each Quayside (each browser) has its own room; the Deliveries page shows its code. **Start empty** clears the room too.
+
+Everything can be removed with Undo: whole operations, orders, purchase orders, delivery notes and lines. Removing an operation removes it from the tracker as well.
 
 The calls Quayside makes are in `../parcel-tracker/connect.js`. How a real company's system would connect the same way (messages, status mapping, what is still needed for the live version) is in [Parcel Tracker's CONNECT.md](https://github.com/gasseRlol/parcel-tracker/blob/main/CONNECT.md).

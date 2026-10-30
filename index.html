@@ -265,6 +265,13 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent);
 .track-chip { display: inline-flex; align-items: center; gap: 5px; margin-top: 7px; padding: 2px 9px 2px 7px; border: 1px dashed var(--line); border-radius: 8px; line-height: 1.35; font-size: 11.5px; color: var(--muted); }
 .track-chip .ic { width: 13px; height: 13px; }
 .track-chip.on { border-style: solid; border-color: var(--accent-line); background: var(--accent-soft); color: var(--ink-2); max-width: 100%; }
+.tracker-bar { display: flex; align-items: center; gap: 10px 12px; flex-wrap: wrap; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 12px; margin: -4px 0 16px; font-size: 13px; color: var(--ink-2); background: var(--surface); }
+.tracker-bar.on { border-style: solid; border-color: var(--accent-line); }
+.tracker-bar > .ic { color: var(--accent); }
+.tracker-bar > span:not(.tb-actions) { flex: 1 1 260px; }
+.tracker-bar .tb-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.tracker-bar .pin { font-family: ui-monospace, "SF Mono", Consolas, monospace; color: var(--ink); letter-spacing: .1em; }
+.btn.ghost.danger { color: var(--danger); }
 .track-chip a { font-family: ui-monospace, "SF Mono", Consolas, monospace; font-weight: 700; }
 .pin-line { margin-top: 5px; }
 .pin-line b { font-family: ui-monospace, "SF Mono", Consolas, monospace; color: var(--ink); letter-spacing: .08em; }
@@ -401,6 +408,6 @@ dialog[open] { animation: pop .16s ease-out; }
 <dialog id="modal" aria-label="Dialog"></dialog>
 <div id="toast" role="status" aria-live="polite"></div>
 <div id="print"></div>
-<script type="module" src="app.js?v=20261030e"></script>
+<script type="module" src="app.js?v=20261031a"></script>
 </body>
 </html>

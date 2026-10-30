@@ -11,7 +11,7 @@ const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; ch
 // Only the apps' own files are served
 const SITES = {
   quayside: { dir: __dirname, files: /^(index\.html|app\.js|data\.js|manifest\.webmanifest|icons\/[a-z0-9-]+\.(?:svg|png))$/ },
-  "parcel-tracker": { dir: path.join(__dirname, "..", "parcel-tracker"), files: /^(index\.html|lookup\.html|app\.js|globe\.js|connect\.js|backend-(?:firebase|demo)\.js|firebase-config\.js|manifest\.webmanifest|icons\/[a-z0-9-]+\.png)$/ },
+  "parcel-tracker": { dir: path.join(__dirname, "..", "parcel-tracker"), files: /^(index\.html|lookup\.html|app\.js|globe\.js|connect\.js|backend-(?:firebase|demo|room)\.js|firebase-config\.js|manifest\.webmanifest|icons\/[a-z0-9-]+\.png)$/ },
 };
 
 http.createServer((req, res) => {

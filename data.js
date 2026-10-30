@@ -58,7 +58,7 @@ export const OP_STATUS = {
   invoiced: { label: 'Invoiced', tone: 'gray' },
 };
 export const PO_STATUS = { sent: { label: 'Waiting', tone: 'violet' }, partial: { label: 'Part received', tone: 'amber' }, received: { label: 'Received', tone: 'green' } };
-export const DN_STATUS = { prepared: { label: 'Packed', tone: 'teal' }, on_way: { label: 'On the way', tone: 'blue' }, delivered: { label: 'Delivered', tone: 'green' } };
+export const DN_STATUS = { prepared: { label: 'Packed', tone: 'teal' }, ready: { label: 'Waiting for a driver', tone: 'violet' }, on_way: { label: 'On the way', tone: 'blue' }, delivered: { label: 'Delivered', tone: 'green' } };
 
 // ---------- Base data the user can edit ----------
 const SUPPLIERS = [
@@ -276,10 +276,17 @@ export function createDN(w, op, ids, t = Date.now()) {
   log(w, op.id, `Packed ${lines.length} line${lines.length > 1 ? 's' : ''} on ${dn.id}`, t);
   return dn;
 }
-export function sendDN(w, dn, t = Date.now()) {
+// "Send out": the note is packed and a driver may take it. It counts as on the way once he picks it up.
+export function releaseDN(w, dn, t = Date.now()) {
   if (dn.status !== 'prepared') return false;
-  dn.status = 'on_way'; dn.sentAt = t;
-  log(w, dn.op, `${dn.id} left the store for ${dn.point}`, t);
+  dn.status = 'ready'; dn.releasedAt = t;
+  log(w, dn.op, `${dn.id} is ready to go out: waiting for a driver`, t);
+  return true;
+}
+export function sendDN(w, dn, t = Date.now(), who = '') {
+  if (!['prepared', 'ready'].includes(dn.status)) return false;
+  dn.status = 'on_way'; dn.sentAt = t; dn.driver = who || dn.driver || '';
+  log(w, dn.op, `${dn.id} left the warehouse for ${dn.point}${who ? ` with ${who}` : ''}`, t);
   return true;
 }
 export function deliverDN(w, dn, signedBy, t = Date.now()) {
@@ -287,6 +294,47 @@ export function deliverDN(w, dn, signedBy, t = Date.now()) {
   if (!dn.sentAt) dn.sentAt = t;
   dn.status = 'delivered'; dn.deliveredAt = t; dn.signedBy = signedBy || '';
   log(w, dn.op, `${dn.id} delivered${signedBy ? `, signed by ${signedBy}` : ''}`, t);
+  return true;
+}
+// ---------- Removing things (any stage; every remove can be undone) ----------
+export function removeDN(w, dn, t = Date.now()) {
+  const op = opById(w, dn.op);
+  op?.items.forEach(i => { if (i.dn === dn.id) i.dn = null; });
+  w.dns = w.dns.filter(d => d !== dn);
+  log(w, dn.op, `Removed ${dn.id}; its lines are back in the warehouse`, t);
+  return true;
+}
+export function removePO(w, po, t = Date.now()) {
+  const op = opById(w, po.op);
+  op?.items.forEach(i => { if (i.po === po.id) { i.po = null; if (!i.dn) i.rcv = null; } });
+  w.pos = w.pos.filter(p => p !== po);
+  log(w, po.op, `Removed ${po.id}; its lines can be ordered again`, t);
+  return true;
+}
+// Lines at any stage; purchase orders and delivery notes left empty go too
+export function removeAnyLines(w, op, ids, t = Date.now(), quiet = false) {
+  const gone = op.items.filter(i => ids.includes(i.id));
+  if (!gone.length) return 0;
+  op.items = op.items.filter(i => !gone.includes(i));
+  const pos = new Set(op.items.map(i => i.po).filter(Boolean)), dns = new Set(op.items.map(i => i.dn).filter(Boolean));
+  w.pos = w.pos.filter(p => p.op !== op.id || pos.has(p.id));
+  w.dns = w.dns.filter(d => d.op !== op.id || dns.has(d.id));
+  if (!quiet) log(w, op.id, `Removed ${gone.length} line${gone.length > 1 ? 's' : ''}`, t);
+  return gone.length;
+}
+export function removeOrder(w, op, orderId, t = Date.now()) {
+  const o = op.orders.find(x => x.id === orderId);
+  if (!o) return false;
+  removeAnyLines(w, op, op.items.filter(i => i.order === orderId).map(i => i.id), t, true);
+  op.orders = op.orders.filter(x => x !== o);
+  log(w, op.id, `Removed order ${o.ref} and its lines`, t);
+  return true;
+}
+export function removeOp(w, op) {
+  w.ops = w.ops.filter(o => o !== op);
+  w.pos = w.pos.filter(p => p.op !== op.id);
+  w.dns = w.dns.filter(d => d.op !== op.id);
+  w.log = w.log.filter(l => l.op !== op.id);
   return true;
 }
 export function cancelDN(w, dn, t = Date.now()) {
@@ -344,7 +392,7 @@ export function exampleOp(w, stage = 'ready') {
   createPOs(w, op, all);
   receive(w, op, all);
   let dn = null;
-  if (stage === 'sent') { dn = createDN(w, op, all); sendDN(w, dn); }
+  if (stage === 'sent') { dn = createDN(w, op, all); releaseDN(w, dn); }
   return { op, dn };
 }
 
@@ -417,8 +465,11 @@ export function seed(now = Date.now()) {
     if (['ready', 'delivering', 'delivered', 'invoiced'].includes(st)) receive(w, op, all, Math.min(now - 3 * H, base - 14 * H));
     if (['delivering', 'delivered', 'invoiced'].includes(st)) {
       const dn = createDN(w, op, all, base - 3 * H);
-      sendDN(w, dn, st === 'delivering' ? now - 35 * 60e3 : base - H);
-      if (st !== 'delivering') deliverDN(w, dn, ['Capt. R. Santos', 'C/O D. Petrov', 'C/E M. Chen', 'Capt. A. Novak'][Math.floor(rnd() * 4)], base + 2 * H);
+      if (st === 'delivering') releaseDN(w, dn, now - 40 * 60e3);
+      else {
+        sendDN(w, dn, base - H);
+        deliverDN(w, dn, ['Capt. R. Santos', 'C/O D. Petrov', 'C/E M. Chen', 'Capt. A. Novak'][Math.floor(rnd() * 4)], base + 2 * H);
+      }
     }
     if (st === 'invoiced') invoiceOp(w, op, base + D);
   }
@@ -448,6 +499,7 @@ function load() {
   try {
     const w = JSON.parse(localStorage.getItem(KEY));
     if (w && w.v === 1) {
+      w.dns.forEach(d => { delete d.tracking; });
       const dt = Date.now() - w.seededAt;
       if (dt > 2 * D) { shiftTimes(w, dt); }
       return w;
@@ -484,7 +536,22 @@ export function undo() {
   save(); emit();
   return u.label;
 }
-export function reset() { w = seed(); undos.length = 0; save(); emit(); }
+export function reset() { w = seed(); undos.length = 0; clearTrackers(); save(); emit(); }
+
+// ---------- Link to the delivery tracker ----------
+// The test room and each operation's tracker code live apart from the data above, so an undo
+// never changes a code a driver or a customer already has.
+const LINK_KEY = 'qs.link.v1';
+const ROOM_LETTERS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+let link = null;
+try { link = JSON.parse(localStorage.getItem(LINK_KEY)); } catch {}
+if (!link || !link.room) link = { room: Array.from(crypto.getRandomValues(new Uint32Array(12)), n => ROOM_LETTERS[n % ROOM_LETTERS.length]).join(''), orders: {} };
+const saveLink = () => { try { localStorage.setItem(LINK_KEY, JSON.stringify(link)); } catch {} };
+saveLink();
+export const room = () => link.room;
+export const trackerOf = opId => link.orders[opId] || null;
+export function setTracker(opId, t) { link.orders[opId] = t; saveLink(); }
+export function clearTrackers() { link.orders = {}; saveLink(); }
 
 // Another tab changed the data (for example the delivery tracker): pick it up
 addEventListener('storage', e => {
