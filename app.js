@@ -78,7 +78,11 @@ function orderFor(w, op) {
   const store = { label: port.store.name, lat: port.store.lat, lng: port.store.lng };
   const fromOf = i => {
     const s = Q.itemStatus(w, i);
-    if (s === 'ordered' || (s === 'with_driver' && i.rcvByDriver)) { // a piece he fetched from a supplier stays listed there const sp = Q.supplier(w, i.sup); return { label: sp ? `${sp.name}${sp.city ? `, ${sp.city}` : ''}` : 'Supplier', ...(Q.cityPos(sp?.city) || {}) }; }
+    // A piece he fetched straight from a supplier stays listed under that supplier
+    if (s === 'ordered' || (s === 'with_driver' && i.rcvByDriver)) {
+      const sp = Q.supplier(w, i.sup);
+      return { label: sp ? `${sp.name}${sp.city ? `, ${sp.city}` : ''}` : 'Supplier', ...(Q.cityPos(sp?.city) || {}) };
+    }
     return ['received', 'packed', 'with_driver'].includes(s) ? store : null;
   };
   const lines = op.items.map(i => ({ id: i.id, desc: i.desc, qty: i.qty, unit: i.unit, stage: lineStage(w, i), from: fromOf(i) }));
