@@ -1,4 +1,4 @@
-import * as Q from './data.js?v=20261031a';
+import * as Q from './data.js?v=20261031b';
 
 // ---------- Helpers ----------
 const $ = (s, el = document) => el.querySelector(s);
@@ -58,14 +58,14 @@ let trackSig = '', renderLater = false;
 const pushed = new Map();  // operation id -> what was last sent to the tracker
 const saving = new Map();  // operation id -> a save that is running
 let paused = false;        // true while the test room is being emptied
-import('../parcel-tracker/connect.js?v=20261031a')
+import('../parcel-tracker/connect.js?v=20261031b')
   .then(m => { T = m; T.useRoom(Q.room()); T.onChange(syncTracker); Q.subscribe(syncTracker); render(); })
   .catch(err => { console.warn('Delivery tracker not reachable', err); render(); });
 
 const tracker = op => Q.trackerOf(op.id);
 // An order is followed once something was ordered from a supplier, until it is invoiced
 const followed = op => !op.invoice && (!!tracker(op) || op.items.some(i => i.po || i.rcv || i.dn));
-const ITEM_TO_STAGE = { needs_price: 'pending', to_order: 'pending', ordered: 'supplier', received: 'warehouse', on_way: 'on_way', delivered: 'ship' };
+const ITEM_TO_STAGE = { needs_price: 'pending', to_order: 'pending', ordered: 'supplier', received: 'warehouse', with_driver: 'collected', on_way: 'on_way', delivered: 'ship' };
 function lineStage(w, it) {
   const s = Q.itemStatus(w, it);
   if (s === 'packed') return Q.dnById(w, it.dn)?.status === 'ready' ? 'packed' : 'warehouse';
@@ -74,7 +74,14 @@ function lineStage(w, it) {
 function orderFor(w, op) {
   const v = Q.vessel(w, op.vessel), t = tracker(op);
   const { port, point } = Q.pointInfo(op.port, op.point);
-  const lines = op.items.map(i => ({ id: i.id, desc: i.desc, qty: i.qty, unit: i.unit, stage: lineStage(w, i) }));
+  // Where the driver picks each piece up: the supplier while it is there, else our warehouse
+  const store = { label: port.store.name, lat: port.store.lat, lng: port.store.lng };
+  const fromOf = i => {
+    const s = Q.itemStatus(w, i);
+    if (s === 'ordered') { const sp = Q.supplier(w, i.sup); return { label: sp ? `${sp.name}${sp.city ? `, ${sp.city}` : ''}` : 'Supplier', ...(Q.cityPos(sp?.city) || {}) }; }
+    return ['received', 'packed', 'with_driver'].includes(s) ? store : null;
+  };
+  const lines = op.items.map(i => ({ id: i.id, desc: i.desc, qty: i.qty, unit: i.unit, stage: lineStage(w, i), from: fromOf(i) }));
   const st = lines.map(l => l.stage);
   const stage = st.length && st.every(x => x === 'ship') ? 3 : st.some(x => x === 'pending' || x === 'supplier') ? 1 : 2;
   const trip = w.dns.find(d => d.op === op.id && (d.status === 'ready' || d.status === 'on_way'));
@@ -122,28 +129,9 @@ function syncTracker() {
   if (!T || !T.isReady() || paused) return;
   const w = W(), now = Date.now();
   // 1. What the driver did comes back into Quayside
-  const moves = [];
-  for (const op of w.ops) {
-    const t = tracker(op), st = t && T.status(t.code);
-    if (!st || !st.trip) continue;
-    const dn = Q.dnById(w, st.trip.ref);
-    if (!dn || dn.op !== op.id) continue;
-    if (dn.status === 'ready' && ['picked_up', 'on_the_way'].includes(st.status)) moves.push({ id: dn.id, send: st.sentAt || now, who: st.courierName });
-    if (dn.status !== 'delivered' && st.status === 'delivered') moves.push({ id: dn.id, deliver: st.deliveredAt || now, by: st.receivedBy || (st.courierName ? `PIN checked by ${st.courierName}` : 'PIN checked') });
-  }
-  if (moves.length) {
-    Q.commit('tracker update', w => {
-      for (const m of moves) {
-        const dn = Q.dnById(w, m.id);
-        if (!dn) continue;
-        if (m.send) Q.sendDN(w, dn, m.send, m.who);
-        if (m.deliver) Q.deliverDN(w, dn, m.by, m.deliver);
-      }
-      return true;
-    }, { undo: false });
-    const done = moves.filter(m => m.deliver).map(m => m.id), sent = moves.filter(m => m.send && !m.deliver);
-    if (done.length) toast(`${done.join(', ')} is on the ship (from the tracker)`, false);
-    else if (sent.length) toast(`${sent.map(m => m.id).join(', ')}: ${sent[0].who || 'the driver'} has it`, false);
+  const notes = [];
+  if (Q.commit('tracker update', w => applyTracker(w, notes), { undo: false })) {
+    if (notes.length) toast(notes.join(' · '), false);
     return; // that change runs this again with the new data
   }
   // 2. Our side goes to the tracker
@@ -155,6 +143,35 @@ function syncTracker() {
   for (const el of document.querySelectorAll('[data-trackcode]')) { const st = T.status(el.dataset.trackcode); if (st) el.textContent = trackText(st); }
   const sig = w.ops.map(o => { const t = tracker(o), st = t && T.status(t.code); return `${o.id}:${st ? `${st.status}:${st.hasDriver}:${st.courierName}:${st.trip && st.trip.ref}` : '-'}`; }).join('|');
   if (sig !== trackSig) { trackSig = sig; if (busy()) renderLater = true; else render(); }
+}
+// The pieces the driver ticked, him setting off, and delivering with the PIN, written into our data
+function applyTracker(w, notes) {
+  let n = 0;
+  for (const op of w.ops) {
+    const t = Q.trackerOf(op.id), st = t && T.status(t.code);
+    if (!st) continue;
+    const who = st.courierName || 'the driver', marks = st.collected || {};
+    for (const it of op.items) {
+      if (it.dn) continue;
+      if (marks[it.id] && !it.collected) { Q.collectLine(w, op, it, marks[it.id], who); n++; }
+      else if (!marks[it.id] && it.collected) { Q.uncollectLine(w, op, it); n++; }
+    }
+    const dns = w.dns.filter(d => d.op === op.id);
+    let trip = dns.find(d => d.status === 'on_way');
+    const ready = dns.find(d => d.status === 'ready');
+    const loose = op.items.filter(i => i.collected && !i.dn);
+    if (['on_the_way', 'problem', 'delivered'].includes(st.status)) {
+      const at = st.sentAt || Date.now();
+      if (!trip && ready) { Q.sendDN(w, ready, at, who); trip = ready; n++; notes.push(`${who} is on the way to ${op.point}`); }
+      if (trip && loose.length) { loose.forEach(i => { i.dn = trip.id; }); n++; }
+      else if (!trip && loose.length) { trip = Q.driverDN(w, op, loose.map(i => i.id), who, at); n++; notes.push(`${who} is on the way to ${op.point}`); }
+    }
+    if (st.status === 'delivered' && trip && trip.status !== 'delivered') {
+      Q.deliverDN(w, trip, st.receivedBy || `PIN checked by ${who}`, st.deliveredAt || Date.now());
+      n++; notes.push(`${trip.id} is on the ship`);
+    }
+  }
+  return n;
 }
 const busy = () => { const a = document.activeElement; return $('#modal').open || (a && view.contains(a) && /INPUT|SELECT|TEXTAREA/.test(a.tagName)); };
 document.addEventListener('focusout', () => setTimeout(() => { if (renderLater && !busy()) { renderLater = false; render(); } }, 60));
@@ -169,9 +186,8 @@ async function emptyRoom(clearHere) {
 }
 const until = async (fn, ms = 5000) => { const t0 = Date.now(); while (!fn() && Date.now() - t0 < ms) await new Promise(r => setTimeout(r, 150)); return fn(); };
 
-function tripFor(w, dn) {
-  const op = Q.opById(w, dn.op);
-  const { port, point } = Q.pointInfo(op.port, dn.point);
+function tripFor(w, op, pointName = op.point) {
+  const { port, point } = Q.pointInfo(op.port, pointName);
   const byBoat = !!point.sea;
   return {
     origin: port.store, roadTo: byBoat ? port.jetty : null, sea: byBoat ? point.sea : [],
@@ -186,8 +202,8 @@ function trackText(st) {
     case 'at_supplier': return `With the supplier${waiting}`;
     case 'in_warehouse': return `In the warehouse${waiting}`;
     case 'waiting': return 'Packed, waiting for a driver';
-    case 'assigned': return `${who} will pick it up`;
-    case 'picked_up': return `${who} has it, not moving yet`;
+    case 'assigned': return `${who} took the job, nothing collected yet`;
+    case 'picked_up': return st.got >= st.of ? `${who} has all ${st.of} pieces` : `${who} is collecting: ${st.got} of ${st.of} pieces`;
     case 'on_the_way': return st.kmLeft == null ? `${who} is on the way` : st.kmLeft < 0.15 ? `${who} is alongside, handing over` : `${who} is on the way, ${st.kmLeft.toFixed(1)} km away`;
     case 'delivered': return st.receivedBy ? `On the ship (${st.receivedBy})` : 'On the ship';
     case 'problem': return `Problem: ${st.problem || 'see the tracker'}`;
@@ -205,7 +221,8 @@ function trackerBar(op) {
       ${!done ? `<small class="muted block">Handover PIN for the ship: <b class="pin">${esc(t.pin)}</b>. The ship tells the driver when it has the goods.</small>` : ''}</span>
     ${T ? `<span class="tb-actions"><a class="btn sm" href="${T.trackUrl(t.code)}" target="_blank" rel="noopener">Open in tracker</a>
       <button class="btn sm ghost" data-act="copyLink" data-id="track:${esc(t.code)}" title="The link the ship or the agent follows the order with">Customer link</button>
-      ${!done ? `<button class="btn sm ghost" data-act="copyLink" data-id="driver:${esc(t.code)}" title="The link the driver opens on his phone to take the job">Driver link</button>` : ''}</span>` : ''}
+      ${!done ? `<button class="btn sm ghost" data-act="copyLink" data-id="driver:${esc(t.code)}" title="The link the driver opens on his phone to take the job">Driver link</button>` : ''}
+      ${!done && st && !st.hasDriver && st.of > 0 ? `<button class="btn sm ghost" data-act="pretend" data-id="${esc(op.id)}" title="For testing alone: a pretend driver collects the pieces and drives them out from this page">Pretend driver</button>` : ''}</span>` : ''}
   </div>`;
 }
 // A delivery note's live line, when it is the trip going on now
@@ -310,7 +327,8 @@ function nextStep(w, op) {
     }
     case 'purchasing': {
       const l = by('ordered'); const pos = new Set(l.map(i => i.po)).size;
-      return { text: `Waiting for ${plural(l.length, 'line')} on ${plural(pos, 'purchase order')}.`, btn: ['nextRcv', 'Mark all received', 'check'] };
+      const t = tracker(op);
+      return { text: `Waiting for ${plural(l.length, 'line')} on ${plural(pos, 'purchase order')}. A driver can already collect them from the suppliers.`, btn: ['nextRcv', 'Mark all received', 'check'], alt: t && T ? ['copyLink', 'Copy driver link', 'link', `driver:${t.code}`] : null };
     }
     case 'ready': {
       const rcv = by('received');
@@ -332,6 +350,11 @@ function nextStep(w, op) {
     case 'delivering': {
       const dn = dns.find(d => d.status === 'on_way'), t = tracker(op);
       return { text: `${dn.id} is on the way to ${dn.point}${dn.driver ? ` with ${dn.driver}` : ''} (left ${rel(dn.sentAt)}).`, btn: ['dnDeliver', 'Mark delivered', 'check', dn.id], link: t && T ? [T.trackUrl(t.code), 'Follow it live'] : null };
+    }
+    case 'collecting': {
+      const t = tracker(op), st = t && T && T.status(t.code);
+      const got = by('with_driver').length, left = op.items.filter(i => ['ordered', 'received', 'packed'].includes(Q.itemStatus(w, i))).length;
+      return { text: `${st?.courierName || 'The driver'} is collecting the pieces: ${got} collected${left ? `, ${left} still to get` : ', ready to set off'}.`, link: t && T ? [T.trackUrl(t.code), 'Follow it live'] : null };
     }
     case 'delivered': return { text: 'Everything is on board. Raise the invoice.', btn: ['invoice', 'Create invoice', 'check'] };
     case 'invoiced': return { text: `Invoice ${op.invoice.no} raised on ${fDate(op.invoice.date)} for ${money(op.invoice.total)}.`, btn: ['print', 'Print invoice', 'print', 'invoice'], done: true };
@@ -482,7 +505,7 @@ function datalists() {
 
 // ---------- One operation ----------
 const STEPS = ['Request', 'Quote', 'Purchase', 'Receive', 'Deliver', 'Invoice'];
-const STEP_AT = { inquiry: 0, quoting: 1, to_purchase: 2, purchasing: 3, ready: 4, delivering: 4, delivered: 5, invoiced: 6 };
+const STEP_AT = { inquiry: 0, quoting: 1, to_purchase: 2, purchasing: 3, ready: 4, collecting: 4, delivering: 4, delivered: 5, invoiced: 6 };
 
 function opDetail(r) {
   const w = W(), op = Q.opById(w, r.parts[1]);
@@ -615,7 +638,7 @@ function opDetail(r) {
           <td class="r">${ed ? `<input class="cell num${i.cost > 0 ? '' : ' warn'}" type="number" min="0" step="any" data-line="cost" data-id="${i.id}" data-focus="l-cost-${i.id}" value="${i.cost || ''}">` : money(i.cost)}</td>
           <td class="r">${ed ? `<input class="cell num${i.price > 0 ? '' : ' warn'}" type="number" min="0" step="any" data-line="price" data-id="${i.id}" data-focus="l-price-${i.id}" value="${i.price || ''}">` : money(i.price)}</td>
           <td class="r nowrap strong">${money(Q.lineSell(i))}</td>
-          <td class="nowrap">${pill(Q.ITEM_STATUS[s])}${ref}${dnRef}</td>
+          <td class="nowrap">${pill(Q.ITEM_STATUS[s])}${s === 'with_driver' ? `<small class="muted block">${esc(i.driver || 'driver')}, ${fShort(i.collected)}</small>` : ''}${ref}${dnRef}</td>
         </tr>`;
       }).join('') || `<tr><td colspan="11" class="empty">${op.items.length ? 'No lines match.' : 'No lines yet.'}</td></tr>`}</tbody>
       ${shown.length ? `<tfoot><tr><td colspan="7" class="r muted">${shown.length === op.items.length ? 'All lines' : `${plural(shown.length, 'line')} shown`}</td><td class="r">${money(t.cost)}</td><td></td><td class="r strong">${money(t.sell)}</td><td class="muted small">margin ${money(t.margin)}</td></tr></tfoot>` : ''}
@@ -1004,14 +1027,15 @@ const ACT = {
     if (navigator.clipboard) navigator.clipboard.writeText(url).then(() => toast(done, false), shown); else shown();
   },
   async pretend(d) {
-    const w = W(), dn = Q.dnById(w, d.id), op = dn && Q.opById(w, dn.op), t = op && tracker(op);
+    // From the tracker bar (an operation) or a delivery note
+    const w = W(), dn = Q.dnById(w, d.id), op = dn ? Q.opById(w, dn.op) : Q.opById(w, d.id), t = op && tracker(op);
     if (!t || !T) return;
     pushOrder(op.id);
-    if (!(await until(() => T.status(t.code)?.trip?.ref === dn.id))) { toast('The tracker has not got this trip yet. Try again in a second.', false); return; }
+    if (!(await until(() => !!T.status(t.code)))) { toast('The tracker has not got this order yet. Try again in a second.', false); return; }
     try {
-      const ok = await T.pretendDriver(t.code, tripFor(W(), dn));
-      if (ok) toast(`A pretend driver took ${dn.id} and is on his way. Watch it in the tracker.`, false, { href: T.trackUrl(t.code), label: 'Open in tracker' });
-      else toast('Someone is already driving this one.', false);
+      const ok = await T.pretendDriver(t.code, tripFor(W(), op, dn ? dn.point : op.point));
+      if (ok) toast('A pretend driver collected the pieces and is on his way. Watch it in the tracker.', false, { href: T.trackUrl(t.code), label: 'Open in tracker' });
+      else toast('A driver is already on the way, or nothing is ready to collect yet.', false);
     } catch { toast("Couldn't start the pretend driver. Check your connection.", false); }
   },
   dnDeliver(d) {

@@ -44,6 +44,7 @@ export const ITEM_STATUS = {
   ordered: { label: 'Ordered', tone: 'violet' },
   received: { label: 'In store', tone: 'teal' },
   packed: { label: 'Packed', tone: 'teal' },
+  with_driver: { label: 'With the driver', tone: 'blue' },
   on_way: { label: 'On the way', tone: 'blue' },
   delivered: { label: 'Delivered', tone: 'green' },
 };
@@ -54,6 +55,7 @@ export const OP_STATUS = {
   purchasing: { label: 'Purchasing', tone: 'violet' },
   ready: { label: 'Ready to deliver', tone: 'teal' },
   delivering: { label: 'Delivering', tone: 'blue' },
+  collecting: { label: 'Driver collecting', tone: 'blue' },
   delivered: { label: 'Delivered', tone: 'green' },
   invoiced: { label: 'Invoiced', tone: 'gray' },
 };
@@ -143,6 +145,9 @@ export const round2 = n => Math.round(n * 100) / 100;
 export const priceFor = (cost, cat) => round2(cost * (cat === 'Provisions' ? 1.18 : 1.25));
 export const userName = id => USERS.find(u => u.id === id)?.name || '';
 export const portOf = name => PORTS.find(p => p.name === name);
+// Rough centre of each city, so a driver gets directions to a supplier
+const CITIES = { 'port said': [31.2653, 32.3019], ismailia: [30.5965, 32.2715], cairo: [30.0444, 31.2357], alexandria: [31.2001, 29.9187], suez: [29.9668, 32.5498], damietta: [31.4165, 31.8133], 'ain sokhna': [29.6, 32.32] };
+export const cityPos = city => { const c = CITIES[String(city || '').trim().toLowerCase()]; return c ? { lat: c[0], lng: c[1] } : null; };
 export const opById = (w, id) => w.ops.find(o => o.id === id);
 export const supplier = (w, id) => w.suppliers.find(s => s.id === id);
 export const vessel = (w, id) => w.vessels.find(v => v.id === id);
@@ -156,6 +161,7 @@ export function itemStatus(w, it) {
     const s = dnById(w, it.dn)?.status;
     return s === 'delivered' ? 'delivered' : s === 'on_way' ? 'on_way' : 'packed';
   }
+  if (it.collected) return 'with_driver';
   if (it.rcv) return 'received';
   if (it.po) return 'ordered';
   if (!it.sup || !(it.cost > 0) || !(it.price > 0) || !(it.qty > 0)) return 'needs_price';
@@ -167,6 +173,7 @@ export function opStatus(w, op) {
   const st = op.items.map(i => itemStatus(w, i));
   if (st.every(s => s === 'delivered')) return 'delivered';
   if (st.some(s => s === 'on_way')) return 'delivering';
+  if (st.some(s => s === 'with_driver')) return 'collecting';
   if (st.some(s => s === 'needs_price')) return 'quoting';
   if (st.some(s => s === 'to_order')) return 'to_purchase';
   if (st.some(s => s === 'ordered')) return 'purchasing';
@@ -274,6 +281,26 @@ export function createDN(w, op, ids, t = Date.now()) {
   lines.forEach(l => { l.dn = dn.id; });
   w.dns.unshift(dn);
   log(w, op.id, `Packed ${lines.length} line${lines.length > 1 ? 's' : ''} on ${dn.id}`, t);
+  return dn;
+}
+// ---------- The driver collecting pieces (from the suppliers or our warehouse) ----------
+export function collectLine(w, op, it, at, who) {
+  it.collected = at; it.driver = who;
+  if (!it.rcv) { it.rcv = at; it.rcvByDriver = true; } // fetched straight from the supplier
+  log(w, op.id, `${who} collected ${it.qty} ${it.unit} ${it.desc}`, at);
+}
+export function uncollectLine(w, op, it) {
+  it.collected = null; it.driver = '';
+  if (it.rcvByDriver) { it.rcv = null; it.rcvByDriver = false; }
+}
+// The driver set off with what he collected: those pieces go on a delivery note of their own
+export function driverDN(w, op, ids, who, t = Date.now()) {
+  const lines = itemsOf(w, op, ids).filter(i => !i.dn);
+  if (!lines.length) return null;
+  const dn = { id: 'DN-' + (++w.seq.dn), op: op.id, date: t, point: op.point, status: 'on_way', releasedAt: t, sentAt: t, deliveredAt: null, signedBy: '', driver: who };
+  lines.forEach(l => { l.dn = dn.id; });
+  w.dns.unshift(dn);
+  log(w, op.id, `${dn.id}: ${who} set off for ${dn.point} with ${lines.length} piece${lines.length > 1 ? 's' : ''}`, t);
   return dn;
 }
 // "Send out": the note is packed and a driver may take it. It counts as on the way once he picks it up.

@@ -40,10 +40,11 @@ One **operation** = one ship call. The flow follows the stepper on each operatio
 Every ship's order is followed in [Parcel Tracker](https://gasserlol.github.io/parcel-tracker/), the order tracker on the same site, in three stages: **with the supplier**, **in the warehouse**, **on the ship**. Each item shows its own stage.
 
 1. As soon as something is ordered from a supplier, Quayside sends the order to the tracker and gets back a tracking code and a handover PIN for the ship. The operation page shows them, with **Customer link** and **Driver link**.
-2. **Send out** on a delivery note makes it "Packed, waiting for a driver".
-3. The driver opens the driver link on his phone, types his name and takes the job. When he taps **On my way**, his location shows on the map, for the customer and in Quayside.
-4. At the ship he types the PIN the ship gives him. Quayside marks the note delivered by itself.
-5. **Pretend driver** does the trip from this page, for testing alone (keep the page open while it drives).
+2. The driver opens the driver link on his phone, types his name and takes the job, as soon as the order is placed.
+3. He gets a **checklist of the pieces**, grouped by where to collect each one (the supplier, or our warehouse once it arrived), with directions. He ticks each piece as he gets it: Quayside shows it "With the driver" and "Ali is collecting: 3 of 5 pieces"; the customer sees the same in the tracker.
+4. When he taps **On my way**, his location shows on the map, and the pieces he has go on a delivery note by themselves.
+5. At the ship he types the PIN the ship gives him. Quayside marks the note delivered. Pieces he didn't collect stay open for another run.
+6. **Send out** on a delivery note still works too ("Packed, waiting for a driver"). **Pretend driver** collects everything and drives it from this page, for testing alone (keep the page open while it drives).
 
 It all goes through a **test room** online: everyone you send a link to sees the same thing, live, without signing in. Each Quayside (each browser) has its own room; the Deliveries page shows its code. **Start empty** clears the room too.
 
