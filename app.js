@@ -78,7 +78,7 @@ function orderFor(w, op) {
   const store = { label: port.store.name, lat: port.store.lat, lng: port.store.lng };
   const fromOf = i => {
     const s = Q.itemStatus(w, i);
-    if (s === 'ordered') { const sp = Q.supplier(w, i.sup); return { label: sp ? `${sp.name}${sp.city ? `, ${sp.city}` : ''}` : 'Supplier', ...(Q.cityPos(sp?.city) || {}) }; }
+    if (s === 'ordered' || (s === 'with_driver' && i.rcvByDriver)) { // a piece he fetched from a supplier stays listed there const sp = Q.supplier(w, i.sup); return { label: sp ? `${sp.name}${sp.city ? `, ${sp.city}` : ''}` : 'Supplier', ...(Q.cityPos(sp?.city) || {}) }; }
     return ['received', 'packed', 'with_driver'].includes(s) ? store : null;
   };
   const lines = op.items.map(i => ({ id: i.id, desc: i.desc, qty: i.qty, unit: i.unit, stage: lineStage(w, i), from: fromOf(i) }));
@@ -167,7 +167,7 @@ function applyTracker(w, notes) {
       else if (!trip && loose.length) { trip = Q.driverDN(w, op, loose.map(i => i.id), who, at); n++; notes.push(`${who} is on the way to ${op.point}`); }
     }
     if (st.status === 'delivered' && trip && trip.status !== 'delivered') {
-      Q.deliverDN(w, trip, st.receivedBy || `PIN checked by ${who}`, st.deliveredAt || Date.now());
+      Q.deliverDN(w, trip, st.receivedBy || 'the ship (PIN checked)', st.deliveredAt || Date.now());
       n++; notes.push(`${trip.id} is on the ship`);
     }
   }
