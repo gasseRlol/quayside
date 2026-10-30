@@ -2,7 +2,9 @@
 
 A web demo of the kind of system a ship chandler (a company that supplies ships with spare parts, stores and food while they are in port) uses every day. It is modelled on a real company's Windows desktop system, but with a made-up name and sample data.
 
-**Run it:** `node server.js`, then open http://127.0.0.1:3500. Everything is saved in the browser (localStorage); "Reset demo" on the overview puts the sample data back.
+**Live demo:** https://gasserlol.github.io/quayside/
+
+**Run it locally:** `node server.js`, then open http://127.0.0.1:3500/quayside/ (the server lays Quayside and the tracker out like the public site, so they can talk to each other). Everything is saved in the browser (localStorage); "Reset demo" on the overview puts the sample data back.
 
 ## What the system is for
 
@@ -33,13 +35,15 @@ One **operation** = one ship call. The flow follows the stepper on each operatio
 - `data.js`: sample data, the rules for each status, and every change (all changes can be undone)
 - `server.js`: small local server
 
-## Next step: connecting the delivery tracker
+## Connected to the delivery tracker
 
-The delivery note is the piece the tracker (Parcel Tracker) follows:
+Each delivery note is handed to [Parcel Tracker](https://gasserlol.github.io/parcel-tracker/?demo), the order tracker on the same site:
 
-1. When a delivery note is sent out, Quayside sends it to the tracker: note number, vessel, where to deliver (berth or anchorage with map position), lines.
-2. The tracker answers with a tracking code and link. Quayside keeps it on the note (today it shows "Tracker: not linked yet") and can print it on the delivery note.
-3. The driver or launch boat uses the tracker's courier screen: picked up, on the way (live phone location), delivered with the handover PIN.
-4. The tracker tells Quayside each status change, so the delivery note moves to "On the way" and "Delivered" by itself.
+1. When a note is packed, Quayside sends it to the tracker and gets back a tracking code and a handover PIN for the ship.
+2. When the note is sent out, a demo courier takes it from our store to the ship: by truck to a berth, or by truck to the launch jetty and then by boat to a ship at anchor. The trip is sped up to about two and a half minutes.
+3. The tracker reports back: the note moves to "On the way" and then "Delivered" (with who received it) by itself.
+4. Unpacking a note cancels it in the tracker.
 
-For the real company the same messages would go between the tracker and their system through a small connector on their side.
+"Driver link" copies the link a real driver would open to take the delivery on their phone.
+
+The calls Quayside makes are in `../parcel-tracker/connect.js`. How a real company's system would connect the same way (messages, status mapping, what is still needed for the live version) is in [Parcel Tracker's CONNECT.md](https://github.com/gasseRlol/parcel-tracker/blob/main/CONNECT.md).

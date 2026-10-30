@@ -4,13 +4,27 @@ const KEY = 'qs.world.v1';
 export const H = 3600e3, D = 24 * H;
 
 // ---------- Fixed lists ----------
+// Each port has our store, the jetty the launch boats leave from, and the usual places ships wait.
+// A point with sea: true is out at anchor, so the last part of a delivery goes by boat (via the sea points).
+const P = (name, lat, lng, extra = {}) => ({ name, lat, lng, ...extra });
 export const PORTS = [
-  { name: 'Port Said', lat: 31.2565, lng: 32.3060, points: ['Port Said anchorage', 'East Port Said - Berth 3', 'Canal waiting area (north)'] },
-  { name: 'Suez', lat: 29.9520, lng: 32.5630, points: ['Port Tewfik anchorage', 'Suez Bay anchorage', 'Adabiya port'] },
-  { name: 'Alexandria', lat: 31.1820, lng: 29.8720, points: ['Alexandria - Berth 55', 'Alexandria outer anchorage', 'Dekheila port'] },
-  { name: 'Damietta', lat: 31.4700, lng: 31.7650, points: ['Damietta container terminal', 'Damietta anchorage'] },
-  { name: 'Ain Sokhna', lat: 29.6000, lng: 32.3500, points: ['Sokhna port - Berth 4', 'Sokhna anchorage'] },
+  { name: 'Port Said', lat: 31.2565, lng: 32.3060, store: P('Quayside store, Port Said', 31.2585, 32.2985), jetty: P('Port Said launch jetty', 31.2640, 32.3065),
+    points: [P('Port Said anchorage', 31.3600, 32.3450, { sea: [P('', 31.2900, 32.3110), P('', 31.3150, 32.3180)] }), P('East Port Said - Berth 3', 31.2330, 32.3570), P('Canal waiting area (north)', 31.3250, 32.3300, { sea: [P('', 31.2900, 32.3110)] })] },
+  { name: 'Suez', lat: 29.9520, lng: 32.5630, store: P('Quayside store, Suez', 29.9730, 32.5380), jetty: P('Port Tewfik launch jetty', 29.9590, 32.5570),
+    points: [P('Port Tewfik anchorage', 29.9150, 32.5650, { sea: [P('', 29.9450, 32.5600)] }), P('Suez Bay anchorage', 29.8800, 32.5350, { sea: [P('', 29.9450, 32.5600)] }), P('Adabiya port', 29.8700, 32.4700)] },
+  { name: 'Alexandria', lat: 31.1820, lng: 29.8720, store: P('Quayside store, Alexandria', 31.1950, 29.8950), jetty: P('Alexandria launch jetty', 31.1850, 29.8730),
+    points: [P('Alexandria - Berth 55', 31.1700, 29.8550), P('Alexandria outer anchorage', 31.2250, 29.8050, { sea: [P('', 31.1880, 29.8450)] }), P('Dekheila port', 31.1400, 29.8100)] },
+  { name: 'Damietta', lat: 31.4700, lng: 31.7650, store: P('Quayside store, Damietta', 31.4200, 31.8100), jetty: P('Damietta launch jetty', 31.4650, 31.7600),
+    points: [P('Damietta container terminal', 31.4600, 31.7550), P('Damietta anchorage', 31.5400, 31.7800, { sea: [P('', 31.4900, 31.7550)] })] },
+  { name: 'Ain Sokhna', lat: 29.6000, lng: 32.3500, store: P('Quayside store, Ain Sokhna', 29.6000, 32.3200), jetty: P('Sokhna launch jetty', 29.6450, 32.3600),
+    points: [P('Sokhna port - Berth 4', 29.6400, 32.3580), P('Sokhna anchorage', 29.6200, 32.4200, { sea: [] })] },
 ];
+// Where a delivery goes: a known point of the port, or the port itself if the point was typed by hand
+export function pointInfo(portName, pointName) {
+  const port = PORTS.find(p => p.name === portName) || PORTS[0];
+  const pt = port.points.find(x => x.name.toLowerCase() === String(pointName || '').trim().toLowerCase());
+  return { port, point: pt || P(pointName || port.name, port.lat, port.lng), known: !!pt };
+}
 export const USERS = [
   { id: 'u1', name: 'Mona Adel', role: 'Marine' },
   { id: 'u2', name: 'Omar Saeed', role: 'Marine' },
@@ -179,7 +193,7 @@ export function createOp(w, f, t = Date.now()) {
   const no = ++w.seq.op;
   const op = {
     id: 'OP-' + no, no, date: t,
-    vessel: f.vessel, agency: f.agency || '', port: f.port, point: f.point || portOf(f.port)?.points[0] || '',
+    vessel: f.vessel, agency: f.agency || '', port: f.port, point: f.point || portOf(f.port)?.points[0]?.name || '',
     direction: f.direction || 'Port call', from: f.from || '', to: f.to || '', eta: f.eta,
     delivery: f.delivery || 'normal', marine: f.marine || [], buyer: f.buyer || '', serial: f.serial || String(no - 2300),
     remark: f.remark || '', buyRemark: f.buyRemark || '', orders: [], items: [], invoice: null,
@@ -338,7 +352,7 @@ export function seed(now = Date.now()) {
     const opened = Math.min(eta - (3 + Math.floor(rnd() * 3)) * D, now - 2 * H);
     const port = portOf(s.port);
     const op = createOp(w, {
-      vessel: s.v, agency: AGENCIES[Math.floor(rnd() * AGENCIES.length)], port: s.port, point: port.points[s.pt] || port.points[0],
+      vessel: s.v, agency: AGENCIES[Math.floor(rnd() * AGENCIES.length)], port: s.port, point: (port.points[s.pt] || port.points[0]).name,
       direction: s.dir, from: s.from, to: s.to, eta, marine: s.mk, buyer: s.buyer, remark: s.remark,
     }, opened);
     for (const o of s.orders) {
@@ -408,14 +422,14 @@ export const world = () => w;
 export const subscribe = fn => { subs.add(fn); return () => subs.delete(fn); };
 export const canUndo = () => undos.length > 0;
 
-// Runs a change. If fn returns false/null/0 nothing is kept.
-export function commit(label, fn) {
+// Runs a change. If fn returns false/null/0 nothing is kept. { undo: false } leaves it out of
+// the undo history (used for updates that come from the delivery tracker).
+export function commit(label, fn, { undo: keep = true } = {}) {
   const before = JSON.stringify(w);
   let out;
   try { out = fn(w); } catch (e) { w = JSON.parse(before); throw e; }
   if (out === false || out === null || out === 0) { w = JSON.parse(before); return out; }
-  undos.push({ label, before });
-  if (undos.length > 40) undos.shift();
+  if (keep) { undos.push({ label, before }); if (undos.length > 40) undos.shift(); }
   save(); emit();
   return out;
 }
