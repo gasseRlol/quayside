@@ -338,7 +338,8 @@ function nextStep(w, op) {
         const t = tracker(op), st = t && T && T.status(t.code);
         const who = st && st.hasDriver && !st.pretend ? st.courierName : '';
         return {
-          text: who ? `${out.id} is ready. ${who} will pick it up; you see him on the map once he presses "On my way".`
+          text: who && st.status === 'picked_up' ? `${who} is collecting the pieces: ${st.got} of ${st.of} so far. You see him on the map once he presses "On my way".`
+            : who ? `${out.id} is ready. ${who} will pick it up; you see him on the map once he presses "On my way".`
             : `${out.id} is ready to go out. Send the driver his link; you see him on the map once he presses "On my way".`,
           btn: t && T ? ['copyLink', 'Copy driver link', 'link', `driver:${t.code}`] : null,
           alt: t && T && !who ? ['pretend', 'Pretend driver', 'magic', out.id] : null,
