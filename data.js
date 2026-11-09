@@ -34,7 +34,11 @@ export const USERS = [
 ];
 export const COUNTRIES = ['Egypt', 'Greece', 'Italy', 'Turkey', 'Saudi Arabia', 'India', 'China', 'Singapore', 'Netherlands', 'Spain', 'Cyprus', 'Malta', 'UAE', 'Oman'];
 export const AGENCIES = ['Bluewater Ship Agents', 'Northgate Maritime', 'Harbor Line Agency', 'Sandbar Shipping Services'];
-export const CATEGORIES = ['Provisions', 'Deck', 'Engine', 'Safety', 'Paint', 'Electrical', 'Cabin', 'Tools'];
+export const CATEGORIES = ['Provisions', 'Deck', 'Engine', 'Safety', 'Paint', 'Electrical', 'Cabin', 'Tools', 'Steel', 'Plastic', 'Pipes'];
+// The kind of order shown next to its number (an order goes to one supplier)
+export const ORDER_TYPES = ['Food', 'Iron', 'Steel', 'Plastic', 'Pipes', 'Deck', 'Engine spares', 'Safety', 'Paint', 'Electrical', 'Cabin', 'Tools'];
+const TYPE_OF = { Provisions: 'Food', Engine: 'Engine spares' };
+export const orderType = cat => TYPE_OF[cat] || cat || 'Order';
 export const DIRECTIONS = ['Port call', 'Northbound', 'Southbound'];
 export const ORDER_FROM = ['Master', 'Chief Engineer', 'Chief Officer', 'Chief Cook', "Owner's office"];
 
@@ -72,6 +76,9 @@ const SUPPLIERS = [
   { id: 's6', name: 'Suez Engine Spares', cat: 'Engine', city: 'Suez', phone: '+20 62 000 0106' },
   { id: 's7', name: 'Fresh Coast Foods', cat: 'Provisions', city: 'Damietta', phone: '+20 57 000 0107' },
   { id: 's8', name: 'Mariner Tools Trading', cat: 'Tools', city: 'Port Said', phone: '+20 66 000 0108' },
+  { id: 's9', name: 'Delta Steel Works', cat: 'Steel', city: 'Port Said', phone: '+20 66 000 0109' },
+  { id: 's10', name: 'Nile Plastics', cat: 'Plastic', city: 'Alexandria', phone: '+20 3 000 0110' },
+  { id: 's11', name: 'Canal Pipes & Fittings', cat: 'Pipes', city: 'Ismailia', phone: '+20 64 000 0111' },
 ];
 const VESSELS = [
   { id: 'v1', name: 'MV Nordic Falcon', imo: '9412873', flag: 'Panama', type: 'Bulk carrier', owner: 'Falcon Bulk Shipping' },
@@ -137,6 +144,21 @@ const CATALOG = [
   ['QS-8002', 'Grease gun, lever type', 'pc', 'Tools', 34, 's8'],
   ['QS-8003', 'Drill bit set HSS 1-13 mm', 'set', 'Tools', 41, 's8'],
   ['QS-8004', 'Pipe wrench 18"', 'pc', 'Tools', 29, 's8'],
+  ['QS-9101', 'Steel plate 6 mm, 1.5 x 6 m', 'sheet', 'Steel', 310, 's9'],
+  ['QS-9102', 'Angle bar 50 x 50 x 5 mm, 6 m', 'pc', 'Steel', 38, 's9'],
+  ['QS-9103', 'Flat bar 50 x 6 mm, 6 m', 'pc', 'Steel', 22, 's9'],
+  ['QS-9104', 'Round bar 20 mm, 6 m', 'pc', 'Steel', 26, 's9'],
+  ['QS-9105', 'Welding electrodes E6013 3.2 mm, 5 kg', 'box', 'Steel', 18, 's9'],
+  ['QS-9201', 'Plastic drum 200 L with lid', 'pc', 'Plastic', 34, 's10'],
+  ['QS-9202', 'Garbage bags, heavy duty, roll of 50', 'roll', 'Plastic', 6.5, 's10'],
+  ['QS-9203', 'Plastic sheeting 4 x 50 m', 'roll', 'Plastic', 55, 's10'],
+  ['QS-9204', 'Storage box 60 L', 'pc', 'Plastic', 9, 's10'],
+  ['QS-9205', 'Cable ties 300 mm, pack of 100', 'pack', 'Plastic', 4.8, 's10'],
+  ['QS-9301', 'PVC pipe 2" x 6 m', 'pc', 'Pipes', 21, 's11'],
+  ['QS-9302', 'Galvanized pipe 1" x 6 m', 'pc', 'Pipes', 46, 's11'],
+  ['QS-9303', 'Pipe elbow 90 degrees 2"', 'pc', 'Pipes', 3.6, 's11'],
+  ['QS-9304', 'Ball valve 1", brass', 'pc', 'Pipes', 19, 's11'],
+  ['QS-9305', 'Pipe clamp 2"', 'pc', 'Pipes', 2.4, 's11'],
 ].map(([code, desc, unit, cat, cost, sup]) => ({ code, desc, unit, cat, cost, sup }));
 
 // ---------- Small helpers ----------
@@ -209,23 +231,58 @@ export function createOp(w, f, t = Date.now()) {
   log(w, op.id, `Opened the operation for ${vessel(w, op.vessel)?.name || 'the vessel'}`, t);
   return op;
 }
+// ---------- Orders: each one goes to one supplier and has its own number under the operation ----------
+export function nextOrderRef(op) {
+  let k = op.orders.length;
+  for (const o of op.orders) { const m = String(o.ref).match(/^(\d+)-(\d+)$/); if (m && +m[1] === op.no) k = Math.max(k, +m[2]); }
+  return `${op.no}-${k + 1}`;
+}
 export function addOrder(w, op, f, t = Date.now()) {
   const n = ++w.seq.ord;
-  const o = { id: 'R' + n, no: n, ref: f.ref || `REQ-${n}`, from: f.from || 'Master', date: t, remark: f.remark || '' };
+  const sup = f.sup || null, sp = sup && supplier(w, sup);
+  const o = { id: 'R' + n, no: n, ref: String(f.ref || '').trim() || nextOrderRef(op), name: String(f.name || '').trim() || orderType(sp?.cat), sup, date: t, remark: f.remark || '' };
   op.orders.push(o);
-  log(w, op.id, `Added order ${o.ref} from the ${o.from}`, t);
+  log(w, op.id, `Added order ${o.ref} (${o.name})${sp ? ` for ${sp.name}` : ''}`, t);
   return o;
+}
+// An order is sent once any of its lines went to the supplier; then its supplier can't change
+export const orderSent = (w, op, o) => op.items.some(i => i.order === o.id && !editable(w, i));
+export function updateOrder(w, op, o, f) {
+  if ('ref' in f) { const r = String(f.ref).trim(); if (!r) return false; o.ref = r; }
+  if ('name' in f) o.name = String(f.name).trim() || o.name;
+  if ('sup' in f) {
+    if (orderSent(w, op, o)) return false;
+    o.sup = f.sup || null;
+    op.items.forEach(i => { if (i.order === o.id) i.sup = o.sup; });
+  }
+  return true;
+}
+// Moves lines that are not sent yet into another order (they take its supplier)
+export function moveLines(w, op, ids, orderId) {
+  const o = op.orders.find(x => x.id === orderId);
+  if (!o) return 0;
+  const lines = itemsOf(w, op, ids).filter(i => editable(w, i) && i.order !== orderId);
+  lines.forEach(i => { i.order = o.id; i.sup = o.sup; });
+  if (lines.length) log(w, op.id, `Moved ${lines.length} line${lines.length > 1 ? 's' : ''} to order ${o.ref}`);
+  return lines.length;
+}
+// The open (not yet sent) order for a supplier, or a new one
+export function orderForSupplier(w, op, sup, t = Date.now()) {
+  return op.orders.find(o => o.sup === sup && !orderSent(w, op, o)) || addOrder(w, op, { sup }, t);
 }
 export function addLine(w, op, orderId, code, qty, t = Date.now(), quiet = false) {
   const c = w.catalog.find(x => x.code === code);
   if (!c) return null;
-  const line = { id: uid(), order: orderId, code: c.code, desc: c.desc, unit: c.unit, cat: c.cat, qty, sup: c.sup, cost: c.cost, price: priceFor(c.cost, c.cat), po: null, rcv: null, dn: null };
+  const order = op.orders.find(o => o.id === orderId);
+  const sup = order && 'sup' in order ? order.sup : c.sup;
+  const line = { id: uid(), order: orderId, code: c.code, desc: c.desc, unit: c.unit, cat: c.cat, qty, sup, cost: c.cost, price: priceFor(c.cost, c.cat), po: null, rcv: null, dn: null };
   op.items.push(line);
   if (!quiet) log(w, op.id, `Added ${qty} ${c.unit} ${c.desc}`, t);
   return line;
 }
 export function addCustomLine(w, op, orderId, f, t = Date.now(), quiet = false) {
-  const line = { id: uid(), order: orderId, code: '', desc: f.desc, unit: f.unit || 'pc', cat: '', qty: f.qty || 1, sup: f.sup || null, cost: f.cost || 0, price: f.price || 0, po: null, rcv: null, dn: null };
+  const order = op.orders.find(o => o.id === orderId);
+  const line = { id: uid(), order: orderId, code: '', desc: f.desc, unit: f.unit || 'pc', cat: '', qty: f.qty || 1, sup: (order && order.sup) || f.sup || null, cost: f.cost || 0, price: f.price || 0, po: null, rcv: null, dn: null };
   op.items.push(line);
   if (!quiet) log(w, op.id, `Added a custom line: ${f.desc}`, t);
   return line;
@@ -248,16 +305,21 @@ export function removeLines(w, op, ids, t = Date.now()) {
 }
 export function createPOs(w, op, ids, t = Date.now()) {
   const lines = itemsOf(w, op, ids).filter(i => itemStatus(w, i) === 'to_order');
-  const bySup = new Map();
-  for (const l of lines) { if (!bySup.has(l.sup)) bySup.set(l.sup, []); bySup.get(l.sup).push(l); }
+  // One purchase order per order (each order has one supplier)
+  const byOrder = new Map();
+  for (const l of lines) { if (!byOrder.has(l.order)) byOrder.set(l.order, []); byOrder.get(l.order).push(l); }
   const made = [];
-  for (const [sup, ls] of bySup) {
-    const po = { id: 'PO-' + (++w.seq.po), op: op.id, sup, date: t };
+  for (const [orderId, ls] of byOrder) {
+    const ord = op.orders.find(o => o.id === orderId);
+    const po = { id: 'PO-' + (++w.seq.po), op: op.id, order: orderId, sup: (ord && ord.sup) || ls[0].sup, date: t };
     ls.forEach(l => { l.po = po.id; });
     w.pos.unshift(po);
     made.push(po);
   }
-  if (made.length) log(w, op.id, `Sent ${made.length} purchase order${made.length > 1 ? 's' : ''}: ${made.map(p => p.id).join(', ')}`, t);
+  if (made.length) {
+    const refs = made.map(p => op.orders.find(o => o.id === p.order)?.ref || p.id);
+    log(w, op.id, `Sent ${made.length} order${made.length > 1 ? 's' : ''} to the suppliers: ${refs.join(', ')}`, t);
+  }
   return made;
 }
 export function receive(w, op, ids, t = Date.now()) {
@@ -381,7 +443,6 @@ export function invoiceOp(w, op, t = Date.now()) {
 
 // ---------- Examples, for testing with one click ----------
 const pick = a => a[Math.floor(Math.random() * a.length)];
-const exampleRef = () => `REQ-${1000 + Math.floor(Math.random() * 9000)}`;
 export function exampleFields(w) {
   const port = pick(PORTS), point = pick(port.points);
   const from = pick(COUNTRIES), to = pick(COUNTRIES.filter(c => c !== from));
@@ -391,30 +452,27 @@ export function exampleFields(w) {
     from, to, eta: Date.now() + (3 + Math.floor(Math.random() * 45)) * H, delivery: 'normal',
     marine: [pick(USERS.filter(u => u.role === 'Marine')).id], buyer: pick(USERS.filter(u => u.role === 'Purchasing')).id,
     remark: pick(['Deliver before noon', 'Agent will confirm the berth', 'Provisions must stay chilled', 'Captain wants a copy of the invoice', 'Call the agent before going out']),
-    ref: exampleRef(), ofrom: pick(ORDER_FROM),
   };
 }
-// Adds n catalogue lines from two random categories to the operation's last order
+// Adds n catalogue lines from a few random categories, each into its supplier's order
 export function addExampleLines(w, op, n = 5, t = Date.now()) {
-  const order = op.orders.at(-1) || addOrder(w, op, { ref: exampleRef(), from: pick(ORDER_FROM) }, t);
-  const cats = [pick(CATEGORIES), pick(CATEGORIES)];
+  const cats = [pick(CATEGORIES), pick(CATEGORIES), pick(CATEGORIES)];
   let pool = w.catalog.filter(c => cats.includes(c.cat) && !op.items.some(i => i.code === c.code));
   if (pool.length < n) pool = w.catalog.filter(c => !op.items.some(i => i.code === c.code));
   pool = pool.map(c => [Math.random(), c]).sort((a, b) => a[0] - b[0]).slice(0, n).map(x => x[1]);
   const lines = pool.map(c => {
     const qty = c.cost > 500 ? 1 + Math.floor(Math.random() * 2) : c.cost > 60 ? 2 + Math.floor(Math.random() * 4)
       : c.cat === 'Provisions' ? pick([20, 30, 40, 50, 80]) : pick([4, 6, 10, 12]);
-    return addLine(w, op, order.id, c.code, qty, t, true);
+    return addLine(w, op, orderForSupplier(w, op, c.sup, t).id, c.code, qty, t, true);
   });
-  if (lines.length) log(w, op.id, `Added ${lines.length} example lines to ${order.ref}`, t);
+  if (lines.length) log(w, op.id, `Added ${lines.length} example lines`, t);
   return lines;
 }
 // A whole example ship call. stage 'ready': everything is in our store. 'sent': also packed and sent out.
 export function exampleOp(w, stage = 'ready') {
   const f = exampleFields(w);
   const op = createOp(w, f);
-  addOrder(w, op, { ref: f.ref, from: f.ofrom });
-  addExampleLines(w, op, 4 + Math.floor(Math.random() * 3));
+  addExampleLines(w, op, 5 + Math.floor(Math.random() * 3));
   const all = op.items.map(i => i.id);
   createPOs(w, op, all);
   receive(w, op, all);
@@ -444,9 +502,9 @@ const SPEC = [
   { v: 'v1', port: 'Port Said', pt: 0, dir: 'Northbound', from: 'Singapore', to: 'Netherlands', eta: 5 * H, stage: 'ready', mk: ['u2', 'u3'], buyer: 'u5', remark: 'Pilot ladder must go out with the launch, not by truck',
     orders: [{ ref: 'NF-DECK-104', from: 'Chief Officer', lines: ['QS-2004', 'QS-2001', 'QS-4002'] }, { ref: 'NF-PROV-105', from: 'Chief Cook', lines: ['QS-1003', 'QS-1009', 'QS-1008', 'QS-1012'] }] },
   { v: 'v2', port: 'Suez', pt: 0, dir: 'Southbound', from: 'Italy', to: 'India', eta: 20 * H, stage: 'purchasing', mk: ['u1'], buyer: 'u4', remark: 'Provisions must stay chilled; anchorage delivery',
-    orders: [{ ref: 'GH/ENG/240', from: 'Chief Engineer', lines: ['QS-3001', 'QS-3002', 'QS-3006'] }, { ref: 'GH/GAL/241', from: 'Chief Cook', lines: ['QS-1001', 'QS-1002', 'QS-1006', 'QS-1007', 'QS-1011'] }, { ref: 'GH/DK/242', from: 'Chief Officer', lines: ['QS-5002', 'QS-5005'] }] },
+    orders: [{ ref: 'GH/ENG/240', from: 'Chief Engineer', lines: ['QS-3001', 'QS-3002', 'QS-3006'] }, { ref: 'GH/GAL/241', from: 'Chief Cook', lines: ['QS-1001', 'QS-1002', 'QS-1006', 'QS-1007', 'QS-1011'] }, { ref: 'GH/DK/242', from: 'Chief Officer', lines: ['QS-5002', 'QS-5005', 'QS-9101', 'QS-9102', 'QS-9105', 'QS-9301', 'QS-9303', 'QS-9304', 'QS-9201', 'QS-9202'] }] },
   { v: 'v3', port: 'Alexandria', pt: 0, dir: 'Port call', from: 'Cyprus', to: 'Egypt', eta: 2 * D, stage: 'to_purchase', mk: ['u3'], buyer: 'u5', remark: '',
-    orders: [{ ref: 'DM-0233', from: 'Master', lines: ['QS-7001', 'QS-7002', 'QS-7003', 'QS-1010', 'QS-1003'] }, { ref: 'DM-0234', from: 'Chief Engineer', lines: ['QS-8001', 'QS-8003', 'QS-6004'] }] },
+    orders: [{ ref: 'DM-0233', from: 'Master', lines: ['QS-7001', 'QS-7002', 'QS-7003', 'QS-1010', 'QS-1003'] }, { ref: 'DM-0234', from: 'Chief Engineer', lines: ['QS-8001', 'QS-8003', 'QS-6004', 'QS-9104', 'QS-9302', 'QS-9305', 'QS-9204', 'QS-9205'] }] },
   { v: 'v8', port: 'Damietta', pt: 0, dir: 'Port call', from: 'Malta', to: 'Egypt', eta: 3 * D + 6 * H, stage: 'quoting', mk: ['u2'], buyer: 'u4', remark: 'Two engine parts need quotes from the maker',
     orders: [{ ref: 'CW-ENG-09', from: 'Chief Engineer', lines: ['QS-3003', 'QS-3004'], custom: [{ desc: 'Hydraulic hose 1/2" x 2 m, crimped both ends', unit: 'pc', qty: 4 }, { desc: 'Purifier bowl seal ring (maker part 51-2208)', unit: 'pc', qty: 2 }] }] },
   { v: 'v9', port: 'Port Said', pt: 2, dir: 'Northbound', from: 'Saudi Arabia', to: 'Italy', eta: 4 * D, stage: 'inquiry', mk: ['u1'], buyer: '', remark: 'Agent says the requisition comes tomorrow', orders: [] },
@@ -474,12 +532,13 @@ export function seed(now = Date.now()) {
       vessel: s.v, agency: AGENCIES[Math.floor(rnd() * AGENCIES.length)], port: s.port, point: (port.points[s.pt] || port.points[0]).name,
       direction: s.dir, from: s.from, to: s.to, eta, marine: s.mk, buyer: s.buyer, remark: s.remark,
     }, opened);
-    for (const o of s.orders) {
-      const ord = addOrder(w, op, o, opened + 40 * 60e3);
-      for (const code of o.lines) addLine(w, op, ord.id, code, qtyFor(w.catalog.find(c => c.code === code)), opened + 50 * 60e3, true);
-      for (const c of o.custom || []) addCustomLine(w, op, ord.id, c, opened + 50 * 60e3, true);
+    // What the vessel asked for, split into one order per supplier
+    for (const code of s.orders.flatMap(o => o.lines)) {
+      const c = w.catalog.find(x => x.code === code);
+      addLine(w, op, orderForSupplier(w, op, c.sup, opened + 40 * 60e3).id, code, qtyFor(c), opened + 50 * 60e3, true);
     }
-    if (s.orders.length) log(w, op.id, `Entered ${op.items.length} lines from the vessel's requisition`, opened + H);
+    for (const c of s.orders.flatMap(o => o.custom || [])) addCustomLine(w, op, orderForSupplier(w, op, 's6', opened + 40 * 60e3).id, c, opened + 50 * 60e3, true);
+    if (op.items.length) log(w, op.id, `Entered ${op.items.length} lines in ${op.orders.length} orders`, opened + H);
     const all = op.items.map(i => i.id);
     const base = Math.min(eta, now);
     const st = s.stage;
@@ -521,11 +580,35 @@ function shiftTimes(w, dt) {
   w.log.forEach(l => { l.t = mv(l.t); });
 }
 
+// Saved data from before an update: add new sample suppliers and items, and turn the old
+// orders (the ship's request lists, lines with any supplier) into one order per supplier
+function migrate(w) {
+  for (const s of SUPPLIERS) if (!w.suppliers.some(x => x.id === s.id)) w.suppliers.push(structuredClone(s));
+  for (const c of CATALOG) if (!w.catalog.some(x => x.code === c.code)) w.catalog.push({ ...c });
+  for (const op of w.ops) {
+    if (op.orders.every(o => 'sup' in o)) continue;
+    const old = op.orders, bySup = new Map(), fresh = [];
+    for (const it of op.items) {
+      const key = it.sup || '';
+      if (!bySup.has(key)) {
+        const sp = it.sup ? supplier(w, it.sup) : null, n = ++w.seq.ord;
+        const o = { id: 'R' + n, no: n, ref: `${op.no}-${fresh.length + 1}`, name: sp ? orderType(sp.cat) : 'Supplier not chosen', sup: it.sup || null, date: (old.find(x => x.id === it.order) || old[0] || {}).date || op.date, remark: '' };
+        bySup.set(key, o); fresh.push(o);
+      }
+      it.order = bySup.get(key).id;
+    }
+    op.orders = fresh;
+  }
+  for (const po of w.pos) if (!po.order) { const op = opById(w, po.op), it = op && op.items.find(i => i.po === po.id); if (it) po.order = it.order; }
+  return w;
+}
+
 // ---------- Store ----------
 function load() {
   try {
     const w = JSON.parse(localStorage.getItem(KEY));
     if (w && w.v === 1) {
+      migrate(w);
       w.dns.forEach(d => { delete d.tracking; });
       const dt = Date.now() - w.seededAt;
       if (dt > 2 * D) { shiftTimes(w, dt); }

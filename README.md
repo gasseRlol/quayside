@@ -10,9 +10,9 @@ A web demo of the kind of system a ship chandler (a company that supplies ships 
 
 One **operation** = one ship call. The flow follows the stepper on each operation:
 
-1. **Request**: a ship (through its agent) says it will arrive at a port at a time (ETA) and sends a requisition: the list of what it needs.
+1. **Request**: a ship (through its agent) says it will arrive at a port at a time (ETA) and what it needs. Under the operation number this becomes several **orders, one per supplier** (iron, plastic, pipes, food…), each with its own order number (2617-1, 2617-2…, editable) and its own items. The operation page lists them all: how many suppliers, how many items each must supply, and where each order is.
 2. **Quote**: each line gets a supplier, our buying cost and our selling price. The quotation can be printed for the ship.
-3. **Purchase**: one purchase order per supplier is created from the priced lines.
+3. **Purchase**: "Send orders to suppliers" makes one purchase order for each order.
 4. **Receive**: suppliers deliver to our store; lines are marked received.
 5. **Deliver**: received lines are packed on a **delivery note**, sent out to the ship (berth or anchorage, often by launch boat) and signed for on board.
 6. **Invoice**: once everything is on board, the invoice is raised.
@@ -23,7 +23,7 @@ One **operation** = one ship call. The flow follows the stepper on each operatio
 | --- | --- |
 | Follow Operations (list with Operation #, Date, Vessel, Port, Marine user, Purchase user, Remark, "Count of Operations") | Operations |
 | Operation form (Operation #, Vessel name, Agency, Port, Direction, From / To country, Marine user 1-3, Normal / Extension delivery, Arrival port, ETA, Op. serial #, Purchase remark) | Operation details |
-| Orders List grid | Orders list |
+| Orders List grid | Orders (one per supplier, with number, type, items and progress) |
 | Items grid with "Show items: All items / By inquiry / Un-delivered", supplier and price columns | Items table (All / Not delivered / By order) |
 | Follow Up Purchase Orders | Purchase orders |
 | Print buttons | Quotation, purchase order, delivery note and invoice printouts |

@@ -1,4 +1,4 @@
-import * as Q from './data.js?v=20261031b';
+import * as Q from './data.js?v=20261109a';
 
 // ---------- Helpers ----------
 const $ = (s, el = document) => el.querySelector(s);
@@ -85,7 +85,9 @@ function orderFor(w, op) {
     }
     return ['received', 'packed', 'with_driver'].includes(s) ? store : null;
   };
-  const lines = op.items.map(i => ({ id: i.id, desc: i.desc, qty: i.qty, unit: i.unit, stage: lineStage(w, i), from: fromOf(i) }));
+  const groupOf = i => { const o = op.orders.find(x => x.id === i.order); return o ? `${o.ref} · ${o.name}` : ''; };
+  const byOrder = (a, b) => op.orders.findIndex(o => o.id === a.order) - op.orders.findIndex(o => o.id === b.order);
+  const lines = op.items.slice().sort(byOrder).map(i => ({ id: i.id, desc: i.desc, qty: i.qty, unit: i.unit, stage: lineStage(w, i), from: fromOf(i), group: groupOf(i) }));
   const st = lines.map(l => l.stage);
   const stage = st.length && st.every(x => x === 'ship') ? 3 : st.some(x => x === 'pending' || x === 'supplier') ? 1 : 2;
   const trip = w.dns.find(d => d.op === op.id && (d.status === 'ready' || d.status === 'on_way'));
@@ -323,16 +325,16 @@ function nextStep(w, op) {
   const by = s => op.items.filter(i => Q.itemStatus(w, i) === s);
   const dns = w.dns.filter(d => d.op === op.id);
   switch (st) {
-    case 'inquiry': return { text: 'No lines yet. Add what the vessel asked for.', btn: ['addItem', 'Add items', 'plus'], alt: ['exampleItems', 'Add example items', 'magic'] };
+    case 'inquiry': return { text: 'No orders yet. Add an order for each supplier, then its items.', btn: ['addOrder', 'Add order', 'plus'], alt: ['exampleItems', 'Add example items', 'magic'] };
     case 'quoting': { const n = by('needs_price').length; return { text: `${plural(n, 'line')} still need${n === 1 ? 's' : ''} a supplier and a price.`, btn: ['show', 'Show them', 'search', 'needs'] }; }
     case 'to_purchase': {
-      const l = by('to_order'); const sups = new Set(l.map(i => i.sup)).size;
-      return { text: `${plural(l.length, 'line')} priced. Order them from ${plural(sups, 'supplier')}.`, btn: ['nextPO', 'Create purchase orders', 'po'], alt: ['print', 'Print quotation', 'print', 'quote'] };
+      const l = by('to_order'), n = new Set(l.map(i => i.order)).size;
+      return { text: `${plural(n, 'order')} ready (${plural(l.length, 'line')}). Send them to their suppliers.`, btn: ['nextPO', 'Send orders to suppliers', 'po'], alt: ['print', 'Print quotation', 'print', 'quote'] };
     }
     case 'purchasing': {
-      const l = by('ordered'); const pos = new Set(l.map(i => i.po)).size;
+      const l = by('ordered'), n = new Set(l.map(i => i.order)).size;
       const t = tracker(op);
-      return { text: `Waiting for ${plural(l.length, 'line')} on ${plural(pos, 'purchase order')}. A driver can already collect them from the suppliers.`, btn: ['nextRcv', 'Mark all received', 'check'], alt: t && T ? ['copyLink', 'Copy driver link', 'link', `driver:${t.code}`] : null };
+      return { text: `Waiting on ${plural(n, 'order')} from the suppliers (${plural(l.length, 'line')}). A driver can already collect them.`, btn: ['nextRcv', 'Mark all received', 'check'], alt: t && T ? ['copyLink', 'Copy driver link', 'link', `driver:${t.code}`] : null };
     }
     case 'ready': {
       const rcv = by('received');
@@ -410,8 +412,8 @@ function dashboard() {
     <div class="stack">
       <section class="card"><div class="card-head"><h2>Waiting on suppliers</h2><a class="more" href="#/pos">All</a></div>
         ${waiting.length ? `<ul class="mini">${waiting.slice(0, 6).map(p => {
-          const op = Q.opById(w, p.op); const n = op.items.filter(i => i.po === p.id).length;
-          return `<li><a href="#/op/${p.op}"><b>${esc(Q.supplier(w, p.sup)?.name)}</b><span class="muted">${p.id} · ${plural(n, 'line')} · for ${esc(Q.vessel(w, op.vessel)?.name)}</span></a>${pill(Q.PO_STATUS[Q.poStatus(w, p)])}</li>`;
+          const op = Q.opById(w, p.op), n = op.items.filter(i => i.po === p.id).length, ord = op.orders.find(o => o.id === p.order);
+          return `<li><a href="#/op/${p.op}"><b>${esc(Q.supplier(w, p.sup)?.name)}</b><span class="muted">${ord ? `Order ${esc(ord.ref)} (${esc(ord.name)})` : p.id} · ${plural(n, 'line')} · for ${esc(Q.vessel(w, op.vessel)?.name)}</span></a>${pill(Q.PO_STATUS[Q.poStatus(w, p)])}</li>`;
         }).join('')}</ul>` : '<p class="empty">Nothing waiting.</p>'}
       </section>
       <section class="card"><div class="card-head"><h2>Latest activity</h2></div>
@@ -448,7 +450,7 @@ function opsList(r) {
   </div>
   <section class="card flush">
     <div class="table-wrap"><table class="grid">
-      <thead><tr><th>Operation</th><th>Opened</th><th>Vessel</th><th>Port / arrival point</th><th>ETA</th><th>Marine</th><th>Purchasing</th><th class="r">Lines</th><th class="r">Value</th><th>Status</th><th>Remark</th><th></th></tr></thead>
+      <thead><tr><th>Operation</th><th>Opened</th><th>Vessel</th><th>Port / arrival point</th><th>ETA</th><th>Marine</th><th>Purchasing</th><th class="r">Orders</th><th class="r">Value</th><th>Status</th><th>Remark</th><th></th></tr></thead>
       <tbody>${rows.map(({ o, s, v }) => `<tr data-href="#/op/${o.id}" class="clickable">
         <td><a href="#/op/${o.id}" class="strong">${o.id}</a></td>
         <td class="nowrap">${fDate(o.date)}</td>
@@ -457,7 +459,7 @@ function opsList(r) {
         <td class="nowrap">${fShort(o.eta)}<small class="muted block">${rel(o.eta)}</small></td>
         <td class="nowrap">${o.marine.map(Q.userName).join(', ')}</td>
         <td class="nowrap">${esc(Q.userName(o.buyer)) || '<span class="muted">-</span>'}</td>
-        <td class="r">${o.items.length}</td>
+        <td class="r nowrap">${o.orders.length}<small class="muted block">${plural(o.items.length, 'item')}</small></td>
         <td class="r nowrap">${money(Q.totals(o.items).sell)}</td>
         <td>${pill(Q.OP_STATUS[s])}</td>
         <td class="remark">${esc(o.remark)}</td><td class="r"><button class="btn sm ghost" data-act="opRemove" data-id="${o.id}" aria-label="Delete ${o.id}" title="Delete this operation">${icon('trash')}</button></td></tr>`).join('') || `<tr><td colspan="12" class="empty">No operations match.</td></tr>`}</tbody>
@@ -493,10 +495,9 @@ function opNew() {
       <label>Purchasing <select name="buyer">${opt('', 'Not yet')}${Q.USERS.filter(u => u.role === 'Purchasing').map(u => opt(u.id, u.name)).join('')}</select></label>
       <label>Delivery <select name="delivery">${opt('normal', 'Normal delivery')}${opt('extension', 'Extension delivery')}</select></label>
     </fieldset>
-    <fieldset><legend>First order (optional)</legend>
-      <label>Requisition no. <input name="ref" placeholder="e.g. REQ-0451"></label>
-      <label>From <select name="ofrom">${Q.ORDER_FROM.map(f => opt(f, f)).join('')}</select></label>
+    <fieldset><legend>Notes</legend>
       <label class="wide">Remark <input name="remark" placeholder="Anything the team should know"></label>
+      <p class="wide muted small" style="margin:0">After opening it, add one order per supplier (iron, plastic, food…) with its items.</p>
     </fieldset>
     <div class="form-actions"><a class="btn ghost" href="#/ops">Cancel</a><button class="btn primary" type="submit">${icon('check')}Open operation</button></div>
   </form>
@@ -505,12 +506,55 @@ function opNew() {
 function datalists() {
   return `<datalist id="dl-agency">${Q.AGENCIES.map(a => `<option value="${esc(a)}">`).join('')}</datalist>
   <datalist id="dl-points">${Q.PORTS.flatMap(p => p.points).map(a => `<option value="${esc(a.name)}">`).join('')}</datalist>
-  <datalist id="dl-countries">${Q.COUNTRIES.map(a => `<option value="${esc(a)}">`).join('')}</datalist>`;
+  <datalist id="dl-countries">${Q.COUNTRIES.map(a => `<option value="${esc(a)}">`).join('')}</datalist>
+  <datalist id="dl-types">${Q.ORDER_TYPES.map(a => `<option value="${esc(a)}">`).join('')}</datalist>`;
 }
 
 // ---------- One operation ----------
 const STEPS = ['Request', 'Quote', 'Purchase', 'Receive', 'Deliver', 'Invoice'];
 const STEP_AT = { inquiry: 0, quoting: 1, to_purchase: 2, purchasing: 3, ready: 4, collecting: 4, delivering: 4, delivered: 5, invoiced: 6 };
+
+// One operation's orders: one per supplier, with its number, type, items and where it is
+const ORDER_STAGES = ['needs_price', 'to_order', 'ordered', 'received', 'packed', 'with_driver', 'on_way', 'delivered'];
+const ORDER_PILL = {
+  needs_price: { label: 'Needs price', tone: 'amber' }, to_order: { label: 'Not sent yet', tone: 'blue' },
+  ordered: { label: 'With the supplier', tone: 'violet' }, received: { label: 'In the warehouse', tone: 'teal' }, packed: { label: 'In the warehouse', tone: 'teal' },
+  with_driver: { label: 'With the driver', tone: 'blue' }, on_way: { label: 'On the way', tone: 'blue' }, delivered: { label: 'On the ship', tone: 'green' },
+};
+function orderState(op, o, sts) {
+  const ls = op.items.filter(i => i.order === o.id);
+  if (!ls.length) return { pill: { label: 'No items yet', tone: 'gray' }, detail: '', ls };
+  const s = ls.map(i => sts.get(i.id)), count = x => s.filter(y => y === x).length;
+  const low = ORDER_STAGES.find(x => s.includes(x)) || 'to_order';
+  const inStore = count('received') + count('packed'), done = count('delivered');
+  const detail = low === 'ordered' && inStore ? `${inStore} of ${ls.length} received` : done && done < ls.length ? `${done} of ${ls.length} on the ship` : '';
+  return { pill: ORDER_PILL[low], detail, ls };
+}
+function ordersCard(w, op, sts) {
+  const sups = new Set(op.orders.map(o => o.sup).filter(Boolean)).size, tot = Q.totals(op.items);
+  return `<section class="card flush orders-card">
+    <div class="card-head pad"><h2>Orders <span class="muted small">${plural(op.orders.length, 'order')} · ${plural(sups, 'supplier')} · ${plural(op.items.length, 'item')}</span></h2>
+      <button class="btn sm" data-act="addOrder">${icon('plus')}Add order</button></div>
+    ${op.orders.length ? `<div class="table-wrap"><table class="grid orders">
+      <thead><tr><th>Order no.</th><th>Type</th><th>Supplier</th><th class="r">Items</th><th class="r">Cost</th><th>Where it is</th><th></th></tr></thead>
+      <tbody>${op.orders.map(o => {
+        const st = orderState(op, o, sts), locked = Q.orderSent(w, op, o);
+        return `<tr class="${ui.show === o.id ? 'picked' : ''}">
+          <td><input class="cell ref" data-ord="ref" data-id="${o.id}" data-focus="o-ref-${o.id}" value="${esc(o.ref)}" aria-label="Order number"></td>
+          <td><input class="cell" data-ord="name" data-id="${o.id}" data-focus="o-name-${o.id}" list="dl-types" value="${esc(o.name)}" aria-label="Order type"></td>
+          <td>${locked ? `<span class="strong" title="Sent to this supplier already">${esc(Q.supplier(w, o.sup)?.name || '')}</span>`
+            : `<select class="cell${o.sup ? '' : ' warn'}" data-ord="sup" data-id="${o.id}" data-focus="o-sup-${o.id}" aria-label="Supplier">${opt('', 'Choose a supplier…')}${w.suppliers.map(s => opt(s.id, s.name, s.id === o.sup)).join('')}</select>`}</td>
+          <td class="r strong">${st.ls.length}</td>
+          <td class="r nowrap">${money(Q.totals(st.ls).cost)}</td>
+          <td class="nowrap">${pill(st.pill)}${st.detail ? `<small class="muted block">${st.detail}</small>` : ''}</td>
+          <td class="r nowrap"><button class="btn sm${ui.show === o.id ? '' : ' ghost'}" data-act="show" data-id="${o.id}" title="Show only this order's items">Items</button><button class="btn sm ghost" data-act="addItem" data-id="${o.id}" aria-label="Add items to order ${esc(o.ref)}" title="Add items to this order">${icon('plus')}</button><button class="btn sm ghost" data-act="orderRemove" data-id="${o.id}" aria-label="Remove order ${esc(o.ref)}" title="Remove this order and its items">${icon('trash')}</button></td>
+        </tr>`;
+      }).join('')}</tbody></table></div>` : '<p class="empty">No orders yet. Add one for each supplier: iron, plastic, pipes, food…</p>'}
+    <div class="sum-box pad">
+      <div><span>Cost</span><b>${money(tot.cost)}</b></div><div><span>Selling</span><b>${money(tot.sell)}</b></div><div><span>Margin</span><b class="pos">${money(tot.margin)}</b></div>
+    </div>
+  </section>`;
+}
 
 function opDetail(r) {
   const w = W(), op = Q.opById(w, r.parts[1]);
@@ -524,7 +568,8 @@ function opDetail(r) {
   const notDelivered = op.items.filter(i => sts.get(i.id) !== 'delivered').length;
   const needs = count('needs_price');
 
-  let shown = op.items;
+  // Items of the same order stay together
+  let shown = op.items.slice().sort((a, b) => op.orders.findIndex(o => o.id === a.order) - op.orders.findIndex(o => o.id === b.order));
   if (ui.show === 'open') shown = shown.filter(i => sts.get(i.id) !== 'delivered');
   else if (ui.show === 'needs') shown = shown.filter(i => sts.get(i.id) === 'needs_price');
   else if (ui.show !== 'all') shown = shown.filter(i => i.order === ui.show);
@@ -534,7 +579,7 @@ function opDetail(r) {
   const sel = op.items.filter(i => ui.sel.has(i.id));
   const selBy = s => sel.filter(i => sts.get(i.id) === s).length;
   const allShownSel = shown.length > 0 && shown.every(i => ui.sel.has(i.id));
-  const orderRef = id => op.orders.find(o => o.id === id)?.ref || '';
+  const orderRef = id => { const o = op.orders.find(x => x.id === id); return o ? `${o.ref} · ${o.name}` : ''; };
   const sups = w.suppliers;
   const t = Q.totals(shown);
   const pos = w.pos.filter(p => p.op === op.id);
@@ -564,7 +609,8 @@ function opDetail(r) {
 
   ${trackerBar(op)}
 
-  <div class="cols op-cols">
+  ${ordersCard(w, op, sts)}
+
     <details class="card details-card" data-details ${ui.details ? 'open' : ''}>
       <summary class="card-head"><h2>${icon('arrow', 'chev')}Operation details</h2><span class="muted small">${ui.details ? 'Saved as you type' : esc([op.agency, op.direction, op.from && op.to ? `${op.from} to ${op.to}` : ''].filter(Boolean).join(' · '))}</span></summary>
       <div class="fields">
@@ -586,21 +632,6 @@ function opDetail(r) {
         ${field('Purchase remark', inp('buyRemark', op.buyRemark), 'wide')}
       </div>
     </details>
-    <section class="card"><div class="card-head"><h2>Orders list</h2><button class="btn sm" data-act="addOrder">${icon('plus')}Add order</button></div>
-      ${op.orders.length ? `<div class="table-wrap"><table class="grid compact">
-        <thead><tr><th>Requisition</th><th>From</th><th class="r">On board</th><th></th></tr></thead>
-        <tbody>${op.orders.map(o => {
-          const ls = op.items.filter(i => i.order === o.id); const on = ls.filter(i => sts.get(i.id) === 'delivered').length;
-          return `<tr class="clickable${ui.show === o.id ? ' picked' : ''}" data-act="show" data-id="${o.id}"><td><b>${esc(o.ref)}</b><small class="muted block">${fDate(o.date)}</small></td><td>${esc(o.from)}</td><td class="r nowrap">${on} of ${plural(ls.length, 'line')}</td><td class="r"><button class="btn sm ghost" data-act="orderRemove" data-id="${o.id}" aria-label="Remove order ${esc(o.ref)}" title="Remove this order and its lines">${icon('trash')}</button></td></tr>`;
-        }).join('')}</tbody></table></div>
-        <p class="muted small">Tap an order to show only its lines.</p>` : '<p class="empty">No orders yet. When the vessel sends its requisition, add it here.</p>'}
-      <div class="sum-box">
-        <div><span>Cost</span><b>${money(Q.totals(op.items).cost)}</b></div>
-        <div><span>Selling</span><b>${money(Q.totals(op.items).sell)}</b></div>
-        <div><span>Margin</span><b class="pos">${money(Q.totals(op.items).margin)}</b></div>
-      </div>
-    </section>
-  </div>
 
   <section class="card flush items">
     <div class="items-bar">
@@ -608,7 +639,7 @@ function opDetail(r) {
         <button class="${ui.show === 'all' ? 'on' : ''}" data-act="show" data-id="all">All items <b>${op.items.length}</b></button>
         <button class="${ui.show === 'open' ? 'on' : ''}" data-act="show" data-id="open">Not delivered <b>${notDelivered}</b></button>
         ${needs ? `<button class="${ui.show === 'needs' ? 'on' : ''}" data-act="show" data-id="needs">Needs price <b>${needs}</b></button>` : ''}
-        ${op.orders.length > 1 ? `<select data-showsel aria-label="Order">${opt('', 'By order…')}${op.orders.map(o => opt(o.id, o.ref, ui.show === o.id)).join('')}</select>` : ''}
+        ${op.orders.length > 1 ? `<select data-showsel aria-label="Order">${opt('', 'By order…')}${op.orders.map(o => opt(o.id, `${o.ref} · ${o.name}`, ui.show === o.id)).join('')}</select>` : ''}
       </div>
       <label class="f-grow small-search">${icon('search')}<input data-iq data-focus="iq" placeholder="Find a line" value="${esc(ui.iq)}"></label>
       <button class="btn test" data-act="exampleItems" title="Adds 5 example lines from the catalogue">${icon('magic')}Example items</button>
@@ -616,7 +647,7 @@ function opDetail(r) {
     </div>
     ${sel.length ? `<div class="bulk">
       <b>${sel.length} selected</b>
-      <select data-bulksup aria-label="Set supplier"><option value="">Set supplier…</option>${sups.map(s => opt(s.id, s.name)).join('')}</select>
+      ${op.orders.length > 1 ? `<select data-bulkorder aria-label="Move to another order"><option value="">Move to order…</option>${op.orders.map(o => opt(o.id, `${o.ref} · ${o.name} · ${Q.supplier(w, o.sup)?.name || 'no supplier'}`)).join('')}</select>` : ''}
       <button class="btn sm" data-act="bulkPO" ${selBy('to_order') ? '' : 'disabled'}>${icon('po')}Order (${selBy('to_order')})</button>
       <button class="btn sm" data-act="bulkRcv" ${selBy('ordered') ? '' : 'disabled'}>${icon('check')}Received (${selBy('ordered')})</button>
       <button class="btn sm" data-act="bulkDN" ${selBy('received') ? '' : 'disabled'}>${icon('truck')}Pack on delivery note (${selBy('received')})</button>
@@ -639,7 +670,7 @@ function opDetail(r) {
           <td class="desc">${ed && !i.code ? `<input class="cell wide" data-line="desc" data-id="${i.id}" data-focus="l-desc-${i.id}" value="${esc(i.desc)}">` : esc(i.desc)}</td>
           <td class="r">${ed ? `<input class="cell num" type="number" min="0" step="any" data-line="qty" data-id="${i.id}" data-focus="l-qty-${i.id}" value="${i.qty}">` : num(i.qty)}</td>
           <td class="muted">${esc(i.unit)}</td>
-          <td>${ed ? `<select class="cell${i.sup ? '' : ' warn'}" data-line="sup" data-id="${i.id}" data-focus="l-sup-${i.id}">${opt('', 'Choose…')}${sups.map(x => opt(x.id, x.name, x.id === i.sup)).join('')}</select>` : esc(Q.supplier(w, i.sup)?.name)}</td>
+          <td>${i.sup ? esc(Q.supplier(w, i.sup)?.name) : '<span class="warn-text">Choose on the order</span>'}</td>
           <td class="r">${ed ? `<input class="cell num${i.cost > 0 ? '' : ' warn'}" type="number" min="0" step="any" data-line="cost" data-id="${i.id}" data-focus="l-cost-${i.id}" value="${i.cost || ''}">` : money(i.cost)}</td>
           <td class="r">${ed ? `<input class="cell num${i.price > 0 ? '' : ' warn'}" type="number" min="0" step="any" data-line="price" data-id="${i.id}" data-focus="l-price-${i.id}" value="${i.price || ''}">` : money(i.price)}</td>
           <td class="r nowrap strong">${money(Q.lineSell(i))}</td>
@@ -654,11 +685,12 @@ function opDetail(r) {
     <section class="card"><div class="card-head"><h2>Purchase orders</h2></div>
       ${pos.length ? `<ul class="docs">${pos.map(p => {
         const ls = op.items.filter(i => i.po === p.id), ps = Q.poStatus(w, p);
-        return `<li><div><b>${p.id}</b> ${pill(Q.PO_STATUS[ps])}<span class="muted block">${esc(Q.supplier(w, p.sup)?.name)} · ${plural(ls.length, 'line')} · ${money(Q.totals(ls).cost)} · sent ${fShort(p.date)}</span></div>
+        const po = op.orders.find(o => o.id === p.order);
+        return `<li><div><b>${p.id}</b>${po ? ` <span class="muted">· order ${esc(po.ref)} (${esc(po.name)})</span>` : ''} ${pill(Q.PO_STATUS[ps])}<span class="muted block">${esc(Q.supplier(w, p.sup)?.name)} · ${plural(ls.length, 'line')} · ${money(Q.totals(ls).cost)} · sent ${fShort(p.date)}</span></div>
           <div class="doc-actions">${ps !== 'received' ? `<button class="btn sm" data-act="poRcv" data-id="${p.id}">${icon('check')}Received</button>` : ''}
           <button class="btn sm ghost" data-act="print" data-id="po:${p.id}" aria-label="Print ${p.id}">${icon('print')}</button>
           <button class="btn sm ghost" data-act="poRemove" data-id="${p.id}" aria-label="Remove ${p.id}" title="Remove this purchase order">${icon('trash')}</button></div></li>`;
-      }).join('')}</ul>` : '<p class="empty">None yet. Select priced lines and press Order, or use the button above.</p>'}
+      }).join('')}</ul>` : '<p class="empty">None yet. "Send orders to suppliers" makes one for each order.</p>'}
     </section>
     <section class="card"><div class="card-head"><h2>Delivery notes</h2></div>
       ${dns.length ? `<ul class="docs">${dns.map(d => {
@@ -687,14 +719,15 @@ function posList() {
   <div class="page-head"><div><h1>Purchase orders</h1><p class="lead">What we ordered from suppliers and whether it has reached our store.</p></div></div>
   <div class="seg page-seg"><button class="${ui.poShow === 'open' ? 'on' : ''}" data-act="poShow" data-id="open">Waiting <b>${openN}</b></button><button class="${ui.poShow === 'all' ? 'on' : ''}" data-act="poShow" data-id="all">All <b>${w.pos.length}</b></button></div>
   <section class="card flush"><div class="table-wrap"><table class="grid">
-    <thead><tr><th>PO</th><th>Sent</th><th>Supplier</th><th>Operation</th><th>Vessel</th><th>Ship ETA</th><th class="r">Lines</th><th class="r">Cost</th><th>Status</th><th></th></tr></thead>
+    <thead><tr><th>PO</th><th>Order</th><th>Sent</th><th>Supplier</th><th>Operation</th><th>Vessel</th><th>Ship ETA</th><th class="r">Lines</th><th class="r">Cost</th><th>Status</th><th></th></tr></thead>
     <tbody>${list.map(({ p, s, op }) => {
       const ls = op.items.filter(i => i.po === p.id);
-      return `<tr><td class="strong">${p.id}</td><td class="nowrap">${fShort(p.date)}</td><td>${esc(Q.supplier(w, p.sup)?.name)}</td>
+      const ord = op.orders.find(o => o.id === p.order);
+      return `<tr><td class="strong">${p.id}</td><td class="nowrap">${ord ? `${esc(ord.ref)}<small class="muted block">${esc(ord.name)}</small>` : '-'}</td><td class="nowrap">${fShort(p.date)}</td><td>${esc(Q.supplier(w, p.sup)?.name)}</td>
         <td><a href="#/op/${op.id}">${op.id}</a></td><td>${esc(Q.vessel(w, op.vessel)?.name)}</td><td class="nowrap">${fShort(op.eta)}</td>
         <td class="r">${ls.length}</td><td class="r nowrap">${money(Q.totals(ls).cost)}</td><td>${pill(Q.PO_STATUS[s])}</td>
         <td class="nowrap r">${s !== 'received' ? `<button class="btn sm" data-act="poRcv" data-id="${p.id}">${icon('check')}Received</button>` : ''}<button class="btn sm ghost" data-act="print" data-id="po:${p.id}" aria-label="Print ${p.id}">${icon('print')}</button><button class="btn sm ghost" data-act="poRemove" data-id="${p.id}" aria-label="Remove ${p.id}">${icon('trash')}</button></td></tr>`;
-    }).join('') || '<tr><td colspan="10" class="empty">Nothing waiting on suppliers.</td></tr>'}</tbody>
+    }).join('') || '<tr><td colspan="11" class="empty">Nothing waiting on suppliers.</td></tr>'}</tbody>
   </table></div></section>`;
 }
 
@@ -816,20 +849,21 @@ modal.addEventListener('click', e => { if (e.target === modal) closeModal(); });
 
 function currentOp() { const r = parseHash(); return r.parts[0] === 'op' ? Q.opById(W(), r.parts[1]) : null; }
 
-function openAddItems(op) {
+const orderLabel = (w, o) => `${o.ref} · ${o.name} · ${Q.supplier(w, o.sup)?.name || 'no supplier yet'}`;
+function openAddItems(op, orderId) {
   const w = W();
-  const picked = op.orders.some(o => o.id === ui.show) ? ui.show : op.orders.at(-1)?.id || '__new';
-  const orderOpts = () => Q.world().ops.find(o => o.id === op.id).orders.map(o => opt(o.id, `${o.ref} (${o.from})`, o.id === picked)).join('');
+  const picked = op.orders.some(o => o.id === orderId) ? orderId : op.orders.some(o => o.id === ui.show) ? ui.show : '__auto';
+  const orderOpts = () => opt('__auto', 'Each item to its supplier\'s order', picked === '__auto') + Q.world().ops.find(o => o.id === op.id).orders.map(o => opt(o.id, orderLabel(w, o), o.id === picked)).join('');
   openModal({
     title: `Add items to ${op.id}`,
     body: `
       <div class="m-row">
-        <label>Order <select id="ai-order">${orderOpts()}<option value="__new"${picked === '__new' ? ' selected' : ''}>New order…</option></select></label>
+        <label>Into order <select id="ai-order">${orderOpts()}<option value="__new">New order…</option></select></label>
         <label class="m-qty">Quantity <input id="ai-qty" type="number" min="0.01" step="any" value="1"></label>
       </div>
-      <div class="m-row" id="ai-new" ${picked === '__new' ? '' : 'hidden'}>
-        <label>Requisition no. <input id="ai-ref" placeholder="REQ-${w.seq.ord + 1}"></label>
-        <label>From <select id="ai-from">${Q.ORDER_FROM.map(f => opt(f, f)).join('')}</select></label>
+      <div class="m-row" id="ai-new" hidden>
+        <label>Supplier <select id="ai-sup">${w.suppliers.map(s => opt(s.id, s.name)).join('')}</select></label>
+        <label>Type <input id="ai-type" list="dl-types" placeholder="Iron, plastic, food…"></label>
       </div>
       <label class="m-search">${icon('search')}<input id="ai-q" placeholder="Search the catalogue by code or name" autocomplete="off" autofocus></label>
       <div id="ai-results" class="results"></div>
@@ -848,22 +882,25 @@ function aiResults() {
   const words = term.split(/\s+/).filter(Boolean);
   const list = Q.world().catalog.filter(c => words.every(wd => `${c.code} ${c.desc} ${c.cat}`.toLowerCase().includes(wd))).slice(0, term ? 12 : 8);
   box.innerHTML = list.map(c => `<button type="button" class="res" data-act="aiPick" data-id="${esc(c.code)}">
-    <span class="mono">${esc(c.code)}</span><span class="grow">${esc(c.desc)}<small class="muted block">${esc(c.cat)} · ${esc(Q.supplier(Q.world(), c.sup)?.name)}</small></span><span class="r">${money(Q.priceFor(c.cost, c.cat))}<small class="muted block">per ${esc(c.unit)}</small></span>${icon('plus', 'add')}</button>`).join('')
+    <span class="mono">${esc(c.code)}</span><span class="grow">${esc(c.desc)}<small class="muted block">${esc(c.cat)} · usually from ${esc(Q.supplier(Q.world(), c.sup)?.name)}</small></span><span class="r">${money(Q.priceFor(c.cost, c.cat))}<small class="muted block">per ${esc(c.unit)}</small></span>${icon('plus', 'add')}</button>`).join('')
     || '<p class="empty">Nothing found. Add it as a custom line below.</p>';
 }
-// Picks (or creates) the order the new line belongs to
-function aiOrder(w, op) {
+// Picks (or creates) the order the new line goes into
+function aiOrder(w, op, code) {
   const sel = $('#ai-order').value;
-  if (sel !== '__new') return sel;
-  const o = Q.addOrder(w, op, { ref: $('#ai-ref').value.trim() || undefined, from: $('#ai-from').value });
-  return o.id;
+  if (sel === '__new') return Q.addOrder(w, op, { sup: $('#ai-sup').value, name: $('#ai-type').value }).id;
+  if (sel === '__auto') {
+    const c = code && w.catalog.find(x => x.code === code);
+    return c ? Q.orderForSupplier(w, op, c.sup).id : Q.orderForSupplier(w, op, null).id;
+  }
+  return sel;
 }
 function aiAfter(text, opId) {
-  const op = Q.opById(Q.world(), opId);
+  const w = Q.world(), op = Q.opById(w, opId);
   const s = $('#ai-order');
   if (s.value === '__new') {
     const last = op.orders.at(-1);
-    s.innerHTML = op.orders.map(o => opt(o.id, `${o.ref} (${o.from})`, o.id === last.id)).join('') + '<option value="__new">New order…</option>';
+    s.innerHTML = opt('__auto', 'Each item to its supplier\'s order') + op.orders.map(o => opt(o.id, orderLabel(w, o), o.id === last.id)).join('') + '<option value="__new">New order…</option>';
     $('#ai-new').hidden = true;
   }
   $('#ai-added').innerHTML = `${icon('check')}${esc(text)}`;
@@ -891,7 +928,7 @@ function printDoc(kind) {
     const po = Q.poById(w, kind.slice(3)), o = Q.opById(w, po.op), s = Q.supplier(w, po.sup), ls = o.items.filter(i => i.po === po.id);
     html = `${docHead('Purchase order', po.id, po.date)}
     <section class="d-meta"><div><small>Supplier</small><b>${esc(s.name)}</b><span>${esc(s.city)}</span><span>${esc(s.phone)}</span></div>
-    <div><small>For</small><b>${esc(Q.vessel(w, o.vessel).name)}</b><span>${o.id}</span><span>Deliver to our store before ${fDT(o.eta - 12 * H)}</span></div></section>
+    <div><small>For</small><b>${esc(Q.vessel(w, o.vessel).name)}</b><span>${o.id}${(o.orders.find(x => x.id === po.order) || {}).ref ? ` · order ${esc(o.orders.find(x => x.id === po.order).ref)} (${esc(o.orders.find(x => x.id === po.order).name)})` : ''}</span><span>Deliver to our store before ${fDT(o.eta - 12 * H)}</span></div></section>
     <table class="d-table"><thead><tr><th>#</th><th>Code</th><th>Description</th><th>Unit</th><th class="r">Qty</th><th class="r">Unit cost</th><th class="r">Amount</th></tr></thead>
     <tbody>${ls.map((i, n) => `<tr><td>${n + 1}</td><td>${esc(i.code)}</td><td>${esc(i.desc)}</td><td>${esc(i.unit)}</td><td class="r">${num(i.qty)}</td><td class="r">${money(i.cost)}</td><td class="r">${money(Q.lineCost(i))}</td></tr>`).join('')}</tbody>
     <tfoot><tr><td colspan="6" class="r">Total (USD)</td><td class="r"><b>${money(Q.totals(ls).cost)}</b></td></tr></tfoot></table>`;
@@ -933,7 +970,7 @@ const ACT = {
   poShow(d) { ui.poShow = d.id; render(); },
   dnShow(d) { ui.dnShow = d.id; render(); },
   print(d) { printDoc(d.id); },
-  addItem() { const op = currentOp(); if (op) openAddItems(op); },
+  addItem(d) { const op = currentOp(); if (op) openAddItems(op, d.id); },
   // ----- Example buttons, for testing quickly -----
   exampleFill() {
     const f = $('form[data-form="newOp"]'), x = Q.exampleFields(W());
@@ -941,7 +978,7 @@ const ACT = {
     Object.assign(f.vessel, { value: x.vessel }); f.newVessel.value = ''; f.agency.value = x.agency; f.port.value = x.port; f.point.value = x.point;
     f.eta.value = toLocalInput(x.eta); f.direction.value = x.direction; f.from.value = x.from; f.to.value = x.to;
     f.m1.value = x.marine[0]; f.m2.value = ''; f.buyer.value = x.buyer; f.delivery.value = 'normal';
-    f.ref.value = x.ref; f.ofrom.value = x.ofrom; f.remark.value = x.remark;
+    f.remark.value = x.remark;
     f.classList.remove('flash'); void f.offsetWidth; f.classList.add('flash');
     toast('Filled with an example. Change anything, then press Open operation.', false);
   },
@@ -965,20 +1002,25 @@ const ACT = {
   },
   addOrder() {
     const op = currentOp(); if (!op) return;
+    const w = W();
     openModal({
       title: `New order on ${op.id}`,
-      body: `<div class="m-row"><label>Requisition no. <input name="ref" placeholder="REQ-${W().seq.ord + 1}" autofocus></label><label>From <select name="from">${Q.ORDER_FROM.map(f => opt(f, f)).join('')}</select></label></div>
-        <label>Remark <input name="remark"></label>`,
-      foot: `<button type="button" class="btn ghost" data-act="closeModal">Cancel</button><button class="btn primary" type="submit">Add order</button>`,
+      body: `<div class="m-row"><label>Order number <input name="ref" value="${esc(Q.nextOrderRef(op))}"></label>
+          <label>Supplier <select name="sup" id="ao-sup" autofocus>${opt('', 'Choose…')}${w.suppliers.map(s => opt(s.id, `${s.name} (${s.cat})`)).join('')}</select></label></div>
+        <div class="m-row"><label>Type <input name="name" id="ao-type" list="dl-types" placeholder="Iron, plastic, pipes, food…"></label><label>Remark <input name="remark"></label></div>
+        <p class="muted small">One order goes to one supplier. Next you pick its items.</p>`,
+      foot: `<button type="button" class="btn ghost" data-act="closeModal">Cancel</button><button class="btn primary" type="submit">${icon('plus')}Add order</button>`,
       submit: fd => {
-        const o = Q.commit('add order', w => Q.addOrder(w, Q.opById(w, op.id), { ref: fd.get('ref').trim() || undefined, from: fd.get('from'), remark: fd.get('remark') }));
-        ui.show = o.id; render(); toast(`Added order ${o.ref}`);
+        if (!fd.get('sup')) { toast('Choose the supplier for this order', false); return false; }
+        const o = Q.commit('add order', w => Q.addOrder(w, Q.opById(w, op.id), { ref: fd.get('ref'), sup: fd.get('sup'), name: fd.get('name'), remark: fd.get('remark') }));
+        ui.show = o.id; render(); toast(`Added order ${o.ref} (${o.name}). Now pick its items.`);
+        setTimeout(() => openAddItems(Q.opById(W(), op.id), o.id), 0);
       },
     });
   },
   aiPick(d) {
     const op = currentOp(); const qty = Number($('#ai-qty').value) || 1;
-    const line = Q.commit('add line', w => { const o = Q.opById(w, op.id); return Q.addLine(w, o, aiOrder(w, o), d.id, qty); });
+    const line = Q.commit('add line', w => { const o = Q.opById(w, op.id); return Q.addLine(w, o, aiOrder(w, o, d.id), d.id, qty); });
     if (line) aiAfter(`Added ${num(qty)} ${line.unit} ${line.desc}`, op.id);
   },
   aiCustom() {
@@ -1082,7 +1124,6 @@ const FORMS = {
         direction: fd.get('direction'), from: fd.get('from').trim(), to: fd.get('to').trim(),
         marine: [fd.get('m1'), fd.get('m2')].filter(Boolean), buyer: fd.get('buyer'), delivery: fd.get('delivery'), remark: fd.get('remark').trim(),
       });
-      if (fd.get('ref').trim()) Q.addOrder(w, o, { ref: fd.get('ref').trim(), from: fd.get('ofrom') });
       return o;
     });
     if (!op) { toast('Pick a vessel or type the new vessel name', false); return; }
@@ -1153,11 +1194,20 @@ document.addEventListener('change', e => {
       return true;
     }), 0);
   }
-  else if (t.matches('[data-bulksup]') && t.value) {
-    const op = currentOp(), sup = t.value;
-    const n = Q.commit('set supplier', w => { const o = Q.opById(w, op.id); return o.items.filter(i => ui.sel.has(i.id)).filter(i => Q.updateLine(w, o, i, { sup })).length; });
-    toast(n ? `Supplier set on ${plural(n, 'line')}` : 'Those lines are already ordered', !!n);
+  else if (t.matches('[data-ord]')) {
+    const { ord: k, id } = t.dataset, val = t.value, op = currentOp();
+    setTimeout(() => {
+      const ok = Q.commit('edit order', w => { const o = Q.opById(w, op.id), x = o.orders.find(y => y.id === id); return !!x && Q.updateOrder(w, o, x, { [k]: val }); });
+      if (!ok && k === 'sup') { toast('This order was already sent to its supplier, so the supplier stays.', false); render(); }
+    }, 0);
   }
+  else if (t.matches('[data-bulkorder]') && t.value) {
+    const op = currentOp(), to = t.value;
+    const n = Q.commit('move lines', w => Q.moveLines(w, Q.opById(w, op.id), [...ui.sel], to));
+    if (n) { ui.sel.clear(); render(); }
+    toast(n ? `Moved ${plural(n, 'line')}` : 'Those lines were already sent to a supplier', !!n);
+  }
+  else if (t.id === 'ao-sup') { const sp = Q.supplier(W(), t.value), ty = $('#ao-type'); if (ty && sp) ty.placeholder = Q.orderType(sp.cat); }
   else if (t.matches('[data-showsel]')) { ui.show = t.value || 'all'; render(); }
   else if (t.matches('[data-filter]')) setQuery({ [t.dataset.filter]: t.value });
   else if (t.matches('[data-catsup]')) Q.commit('change supplier', w => { const c = w.catalog.find(x => x.code === t.dataset.catsup); if (!c) return false; c.sup = t.value; return true; });
