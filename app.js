@@ -274,6 +274,7 @@ function setQuery(changes) {
 }
 
 const view = $('#view');
+let drawnPath = null;
 const PAGES = {
   '': dashboard, ops: opsList, op: opDetail, pos: posList, deliveries: dnsList,
   vessels: vesselsPage, suppliers: suppliersPage, catalogue: cataloguePage,
@@ -285,7 +286,11 @@ function render() {
   try { if (key && a.selectionStart != null) caret = [a.selectionStart, a.selectionEnd]; } catch {}
   const r = parseHash();
   const page = PAGES[r.parts[0] || ''] || notFound;
+  // The page is redrawn whenever the tracker sends news: keep what someone is typing in a form
+  const kept = r.path === drawnPath ? [...view.querySelectorAll('form[data-form] [name]')].map(e => [e.form.dataset.form, e.name, e.value]) : [];
   view.innerHTML = page(r);
+  for (const [f, n, v] of kept) { const e = view.querySelector(`form[data-form="${f}"] [name="${n}"]`); if (e) e.value = v; }
+  drawnPath = r.path;
   if (key) {
     const el = view.querySelector(`[data-focus="${CSS.escape(key)}"]`);
     if (el) { el.focus({ preventScroll: true }); try { caret && el.setSelectionRange(...caret); } catch {} }
@@ -1138,19 +1143,23 @@ const FORMS = {
     location.hash = `#/op/${op.id}`;
     toast(`Opened ${op.id}`);
   },
+  // Each form is emptied before saving, so the redraw that follows starts it blank
   vessel(fd, f) {
+    f.reset();
     Q.commit('add vessel', w => { w.vessels.push({ id: 'v' + Q.uid(), name: fd.get('name').trim(), imo: fd.get('imo').trim(), flag: fd.get('flag').trim(), type: fd.get('type').trim(), owner: fd.get('owner').trim() }); return true; });
-    f.reset(); toast('Vessel added');
+    toast('Vessel added');
   },
   supplier(fd, f) {
+    f.reset();
     Q.commit('add supplier', w => { w.suppliers.push({ id: 's' + Q.uid(), name: fd.get('name').trim(), cat: fd.get('cat'), city: fd.get('city').trim(), phone: fd.get('phone').trim() }); return true; });
-    f.reset(); toast('Supplier added');
+    toast('Supplier added');
   },
   item(fd, f) {
     const code = fd.get('code').trim().toUpperCase();
     if (W().catalog.some(c => c.code === code)) { toast(`${code} is already in the catalogue`, false); return; }
+    f.reset();
     Q.commit('add catalogue item', w => { w.catalog.push({ code, desc: fd.get('desc').trim(), unit: fd.get('unit').trim(), cat: fd.get('cat'), cost: Q.round2(Number(fd.get('cost')) || 0), sup: fd.get('sup') }); return true; });
-    f.reset(); toast(`${code} added`);
+    toast(`${code} added`);
   },
 };
 
