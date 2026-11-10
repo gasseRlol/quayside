@@ -284,6 +284,8 @@ function render() {
   const key = a && view.contains(a) ? a.dataset.focus : null;
   let caret = null;
   try { if (key && a.selectionStart != null) caret = [a.selectionStart, a.selectionEnd]; } catch {}
+  // someone typing in a table cell when news arrives keeps what they typed (unless that field itself just changed)
+  const typing = key && /INPUT|TEXTAREA/.test(a.tagName) && a.value !== a.defaultValue ? [a.defaultValue, a.value] : null;
   const r = parseHash();
   const page = PAGES[r.parts[0] || ''] || notFound;
   // The page is redrawn whenever the tracker sends news: keep what someone is typing in a form
@@ -293,6 +295,7 @@ function render() {
   drawnPath = r.path;
   if (key) {
     const el = view.querySelector(`[data-focus="${CSS.escape(key)}"]`);
+    if (el && typing && el.value === typing[0]) el.value = typing[1];
     if (el) { el.focus({ preventScroll: true }); try { caret && el.setSelectionRange(...caret); } catch {} }
   }
   renderChrome(r);
