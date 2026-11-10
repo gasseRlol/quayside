@@ -58,7 +58,7 @@ let trackSig = '', renderLater = false;
 const pushed = new Map();  // operation id -> what was last sent to the tracker
 const saving = new Map();  // operation id -> a save that is running
 let paused = false;        // true while the test room is being emptied
-import('../parcel-tracker/connect.js?v=20261031b')
+import('../parcel-tracker/connect.js?v=20261110a')
   .then(m => { T = m; T.useRoom(Q.room()); T.onChange(syncTracker); Q.subscribe(syncTracker); render(); })
   .catch(err => { console.warn('Delivery tracker not reachable', err); render(); });
 
@@ -142,6 +142,14 @@ function syncTracker() {
   }
   // 2. Our side goes to the tracker
   for (const op of w.ops) if (followed(op)) pushOrder(op.id);
+  // A pretend driver drives from this page: if the page was closed while he drove, carry on
+  for (const op of w.ops) {
+    const t = tracker(op), st = t && T.status(t.code);
+    if (st && st.status === 'on_the_way' && st.pretend && !T.isPretending(t.code)) {
+      const dn = w.dns.find(x => x.op === op.id && x.status === 'on_way');
+      T.pretendDriver(t.code, tripFor(w, op, dn ? dn.point : op.point)).catch(() => {});
+    }
+  }
   // 3. Orders sent from here that no longer exist here leave the room
   const known = new Set(w.ops.map(o => tracker(o)?.code).filter(Boolean));
   for (const st of T.sentBy('quayside')) if (!known.has(st.code) && now - (st.createdAt || 0) > 20e3) T.remove(st.code);
